@@ -153,13 +153,18 @@ local Config: { [string]: any } = {
     DrawFOV = false,
     FOVColor = IdenticalTheme.Accent,
     TargetNPCs = true,
+    AimbotWallCheck = true,
+    AimbotPrediction = false,
+    BulletVelocity = 850,
+    BulletDropAimAssist = false,
+    BulletDropGravityScale = 1.0,
+    BulletDropMaxTime = 3.0,
+    BulletFallHelper = false,
 
     NoRecoil = false,
     NoSpread = false,
     NoDrag = false,
     NoDrop = false,
-    BulletDropAimAssist = true, -- Fitur baru kompensasi balistik aimbot
-    BulletFallHelper = false,   -- Indikator titik jatuh peluru di layar
     InstantAim = false,
 
     PlayerESP = false,
@@ -168,29 +173,20 @@ local Config: { [string]: any } = {
     ESPNames = true,
     ESPDistance = true,
     ESPTracers = false,
-    ESPOffsetX = 0,
-    ESPOffsetY = 0,
-    
     ContainerESP = false,
     ContainerKey = Enum.KeyCode.P,
-    ContainerMaxDist = 2000,
-    ContainerFilterEnabled = false,
-    ContainerFilterText = "",
-    ContainerKeywords = {"M4A1", "Altyn", "AS Val"},
-    
-    PlayerMaxDist = 20000,
+    ContainerMaxDist = 200,
+    PlayerMaxDist = 2000,
     NPC_ESP = false,
-    NPCMaxDist = 15000,
+    NPCMaxDist = 1500,
     Vehicle_ESP = false,
-    VehicleMaxDist = 20000,
+    VehicleMaxDist = 2000,
     DroppedItemESP = false,
-    DroppedItemMaxDist = 3000,
-    LastDeathESP = false,
-
-    RadarEnabled = false,
-    RadarMaxDist = 3000,
-    RadarSize = 120,
-    AutoLoot = false,
+    DroppedItemMaxDist = 300,
+    ExtractionESP = true,
+    ExtractionMaxDist = 5000,
+    TrapESP = true,
+    TrapMaxDist = 1000,
 
     BulletTracers = false,
     TracerColor = IdenticalTheme.Accent,
@@ -406,9 +402,9 @@ local function GetEquippedItem(char: Model?): string
            and not c.Name:find("Wraps") and not c.Name:find("Cap") and not c.Name:find("Hood") 
            and not c.Name:find("Knee") and not c.Name:find("Mask") and not c.Name:find("Torso")
            and not c.Name:find("Legs") and not c.Name:find("Boots") and not c.Name:find("Hand") then
-             if c:FindFirstChild("ItemProperties") or c:FindFirstChild("Handle") or c:FindFirstChild("Barrel") or c:FindFirstChild("Blade") or c:FindFirstChild("Receiver") or c:FindFirstChild("Part") then
+            if c:FindFirstChild("ItemProperties") or c:FindFirstChild("Handle") or c:FindFirstChild("Barrel") or c:FindFirstChild("Blade") or c:FindFirstChild("Receiver") or c:FindFirstChild("Part") then
                 return c.Name
-             end
+            end
         end
     end
 
@@ -495,6 +491,7 @@ local function CacheProjectDeltaData()
 end
 CacheProjectDeltaData()
 
+
 local function ScanTargetInventory(target: Player | Model): {string}
     local items: {string} = {}
     local targetPlayer = if target:IsA("Player") then target else Players:GetPlayerFromCharacter(target)
@@ -510,9 +507,9 @@ local function ScanTargetInventory(target: Player | Model): {string}
                     local targetModel = itemObj.Value
                     local props = targetModel:FindFirstChild("ItemProperties")
                     itemName = (props and tostring(props:GetAttribute("CallSign") or props:GetAttribute("ItemName"))) or targetModel.Name
-                    if not ItemIcons[itemName or ""] and props and props:FindFirstChild("ItemProperties") then
+                    if not ItemIcons[itemName or ""] and props and props:FindFirstChild("ItemIcon") then
                         local icon = props:FindFirstChild("ItemIcon") :: any
-                        if icon then ItemIcons[itemName or ""] = icon.Image end
+                        ItemIcons[itemName or ""] = icon.Image
                     end
                 else
                     local props = itemObj:FindFirstChild("ItemProperties")
@@ -546,6 +543,31 @@ local function IsAlive(player: Player): boolean
     return hum ~= nil and root ~= nil and hum.Health > 0
 end
 
+local function IsVisible(targetPart: BasePart): boolean
+    local origin = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+    local dir = targetPos - origin
+    local dist = dir.Magnitude
+    if dist < 0.5 then return true end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = { LocalPlayer.Character, Camera }
+    rayParams.IgnoreWater = true
+
+    local hit = Workspace:Raycast(origin, dir, rayParams)
+    if not hit then
+        return true
+    end
+    if hit.Instance == targetPart or hit.Instance:IsDescendantOf(targetPart.Parent) then
+        return true
+    end
+    if hit.Instance.Transparency >= 0.85 or not hit.Instance.CanCollide then
+        return true
+    end
+    return false
+end
+
 local function GetClosestPlayerToMouse(maxFov: number?): (any, Vector3?, Vector3?)
     local shortestDist = maxFov or math.huge
     local bestTarget: any = nil
@@ -557,15 +579,17 @@ local function GetClosestPlayerToMouse(maxFov: number?): (any, Vector3?, Vector3
         if p ~= LocalPlayer and IsAlive(p) and p.Character then
             local bone = p.Character:FindFirstChild(Config.AimbotBone) or p.Character:FindFirstChild("Head") or p.Character:FindFirstChild("HumanoidRootPart")
             if bone and bone:IsA("BasePart") then
-                local sPos, onScreen = Camera:WorldToViewportPoint(bone.Position)
-                if onScreen then
-                    local screenVec = Vector2.new(sPos.X, sPos.Y)
-                    local dist = (mousePos - screenVec).Magnitude
-                    if dist < shortestDist then
-                        shortestDist = dist
-                        bestTarget = p
-                        bestRawPos = bone.Position
-                        bestPos = bone.Position
+                if not Config.AimbotWallCheck or IsVisible(bone) then
+                    local sPos, onScreen = Camera:WorldToViewportPoint(bone.Position)
+                    if onScreen then
+                        local screenVec = Vector2.new(sPos.X, sPos.Y)
+                        local dist = (mousePos - screenVec).Magnitude
+                        if dist < shortestDist then
+                            shortestDist = dist
+                            bestTarget = p
+                            bestRawPos = bone.Position
+                            bestPos = bone.Position
+                        end
                     end
                 end
             end
@@ -580,15 +604,17 @@ local function GetClosestPlayerToMouse(maxFov: number?): (any, Vector3?, Vector3
                 if hum and hum.Health > 0 and not isVendor then
                     local bone = npc:FindFirstChild(Config.AimbotBone) or npc:FindFirstChild("Head") or npc:FindFirstChild("HumanoidRootPart") or npc.PrimaryPart or npc:FindFirstChildWhichIsA("BasePart")
                     if bone and bone:IsA("BasePart") then
-                        local sPos, onScreen = Camera:WorldToViewportPoint(bone.Position)
-                        if onScreen then
-                            local screenVec = Vector2.new(sPos.X, sPos.Y)
-                            local dist = (mousePos - screenVec).Magnitude
-                            if dist < shortestDist then
-                                shortestDist = dist
-                                bestTarget = npc
-                                bestRawPos = bone.Position
-                                bestPos = bone.Position
+                        if not Config.AimbotWallCheck or IsVisible(bone) then
+                            local sPos, onScreen = Camera:WorldToViewportPoint(bone.Position)
+                            if onScreen then
+                                local screenVec = Vector2.new(sPos.X, sPos.Y)
+                                local dist = (mousePos - screenVec).Magnitude
+                                if dist < shortestDist then
+                                    shortestDist = dist
+                                    bestTarget = npc
+                                    bestRawPos = bone.Position
+                                    bestPos = bone.Position
+                                end
                             end
                         end
                     end
@@ -634,6 +660,23 @@ local function ApplyAmmoMods()
     end
 end
 
+local ammoTypesFolder = ReplicatedStorage:FindFirstChild("AmmoTypes")
+if ammoTypesFolder then
+    TrackConnection(ammoTypesFolder.ChildAdded:Connect(function()
+        task.defer(ApplyAmmoMods)
+    end))
+end
+
+local function RestoreAmmoMods()
+    for ammo, original in pairs(cachedAmmoAttributes) do
+        if ammo and ammo.Parent then
+            if original.Recoil ~= nil then ammo:SetAttribute("RecoilStrength", original.Recoil) end
+            if original.Drop ~= nil then ammo:SetAttribute("ProjectileDrop", original.Drop) end
+            if original.Drag ~= nil then ammo:SetAttribute("Drag", original.Drag) end
+        end
+    end
+end
+
 local isAimbotActive = false
 TrackConnection(UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
@@ -648,71 +691,134 @@ TrackConnection(UserInputService.InputEnded:Connect(function(input)
     end
 end))
 
--- ==========================================
--- BULLET DROP AIM ASSIST & HELPER SYSTEM
--- ==========================================
+-- Touch fallback: hold this button exactly like RMB on desktop.
+if UserInputService.TouchEnabled then
+    local mobileGui = TrackInstance(Instance.new("ScreenGui"))
+    mobileGui.Name = "IdenticalMobileAim"
+    mobileGui.ResetOnSpawn = false
+    mobileGui.IgnoreGuiInset = true
+    mobileGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local aimButton = Instance.new("TextButton")
+    aimButton.Name = "AimHold"
+    aimButton.AnchorPoint = Vector2.new(1, 1)
+    aimButton.Position = UDim2.new(1, -24, 1, -145)
+    aimButton.Size = UDim2.fromOffset(76, 76)
+    aimButton.BackgroundTransparency = 0.25
+    aimButton.BackgroundColor3 = Color3.fromRGB(20, 24, 31)
+    aimButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    aimButton.Text = "AIM"
+    aimButton.TextSize = 18
+    aimButton.Font = Enum.Font.GothamBold
+    aimButton.AutoButtonColor = true
+    aimButton.Parent = mobileGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = aimButton
+
+    TrackConnection(aimButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            isAimbotActive = true
+        end
+    end))
+    TrackConnection(aimButton.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            isAimbotActive = false
+        end
+    end))
+end
+
+local function GetTargetVelocity(target: any): Vector3
+    local char = if typeof(target) == "Instance" and target:IsA("Player") then target.Character else target
+    if not char or typeof(char) ~= "Instance" then return Vector3.zero end
+    local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    if root and root:IsA("BasePart") then
+        return root.AssemblyLinearVelocity
+    end
+    return Vector3.zero
+end
+
+local function SolveProjectileAim(origin: Vector3, targetPos: Vector3, targetVelocity: Vector3): (Vector3, number)
+    local speed = math.max(tonumber(Config.BulletVelocity) or 850, 1)
+    local maxTime = math.max(tonumber(Config.BulletDropMaxTime) or 3, 0.05)
+    local gravityScale = math.max(tonumber(Config.BulletDropGravityScale) or 1, 0)
+
+    -- Iterate travel time so moving-target lead and distance agree with each other.
+    local travelTime = math.min((targetPos - origin).Magnitude / speed, maxTime)
+    for _ = 1, 3 do
+        local futureTarget = targetPos
+        if Config.AimbotPrediction then
+            futureTarget += targetVelocity * travelTime
+        end
+        travelTime = math.min((futureTarget - origin).Magnitude / speed, maxTime)
+    end
+
+    local aimPos = targetPos
+    if Config.AimbotPrediction then
+        aimPos += targetVelocity * travelTime
+    end
+
+    -- Roblox gravity acts downward, so compensate by aiming upward by 1/2*g*t^2.
+    if Config.BulletDropAimAssist and not Config.NoDrop then
+        local drop = 0.5 * Workspace.Gravity * gravityScale * travelTime * travelTime
+        aimPos += Vector3.new(0, drop, 0)
+    end
+
+    return aimPos, travelTime
+end
+
 local bulletFallCircle = (Drawing and Drawing.new("Circle")) :: any
 if bulletFallCircle then
     bulletFallCircle.Thickness = 1
-    bulletFallCircle.NumSides = 16
+    bulletFallCircle.NumSides = 20
     bulletFallCircle.Filled = false
     bulletFallCircle.Transparency = 0.9
     bulletFallCircle.Color = Color3.fromRGB(255, 170, 0)
     bulletFallCircle.Radius = 6
+    bulletFallCircle.Visible = false
     TrackDrawing(bulletFallCircle)
 end
 
 TrackConnection(RunService.RenderStepped:Connect(function()
     if not isRunning then return end
-    ApplyAmmoMods()
+
+    if bulletFallCircle then
+        bulletFallCircle.Visible = false
+    end
 
     if Config.AimbotEnabled and isAimbotActive then
         local targetPlr, targetPos = GetClosestPlayerToMouse(Config.AimbotFOV)
         if targetPlr and targetPos then
-            local currentCF = Camera.CFrame
-            local aimTargetPos = targetPos
+            local aimPos = SolveProjectileAim(Camera.CFrame.Position, targetPos, GetTargetVelocity(targetPlr))
 
-            -- Bullet Drop Aim Assist (Kompensasi Parabola Gravitasi Berdasarkan Jarak)
-            if Config.BulletDropAimAssist and not Config.NoDrop then
-                local dist = (targetPos - currentCF.Position).Magnitude
-                local flightTime = dist / 600 -- Asumsi kecepatan rata-rata proyektil 600 m/s
-                local dropOffset = 0.5 * 35.8 * (flightTime ^ 2) * 3.5
-                aimTargetPos = targetPos + Vector3.new(0, math.clamp(dropOffset, 0, 25), 0)
+            if bulletFallCircle and Config.BulletFallHelper then
+                local screen, onScreen = Camera:WorldToViewportPoint(aimPos)
+                if onScreen and screen.Z > 0 then
+                    bulletFallCircle.Position = Vector2.new(screen.X, screen.Y)
+                    bulletFallCircle.Visible = true
+                end
             end
 
-            local targetCF = CFrame.new(currentCF.Position, aimTargetPos)
+            local currentCF = Camera.CFrame
+            local targetCF = CFrame.new(currentCF.Position, aimPos)
             local smoothFactor = math.clamp(0.2 / math.max(Config.AimbotSmoothness, 0.05), 0.02, 1.0)
             Camera.CFrame = currentCF:Lerp(targetCF, smoothFactor)
         end
     end
-
-    -- Bullet Drop Helper Visualization
-    if bulletFallCircle then
-        if Config.BulletFallHelper and not isUIVisible then
-            local _, targetPos = GetClosestPlayerToMouse(400)
-            if targetPos and not Config.NoDrop then
-                local dist = (targetPos - Camera.CFrame.Position).Magnitude
-                local dropPreview = targetPos + Vector3.new(0, math.clamp((dist * 0.04), 0, 20), 0)
-                local sPos, onScreen = Camera:WorldToViewportPoint(dropPreview)
-                if onScreen then
-                    bulletFallCircle.Visible = true
-                    bulletFallCircle.Position = Vector2.new(sPos.X, sPos.Y)
-                else
-                    bulletFallCircle.Visible = false
-                end
-            else
-                bulletFallCircle.Visible = false
-            end
-        else
-            bulletFallCircle.Visible = false
-        end
-    end
 end))
+
+local isUIVisible = true
+local mainFrame: any = nil
+local targetMainFrame: any = nil
+local TargetInfoGui: any = nil
+local ToggleUI: any = nil
+local UnloadScript: any = nil
 
 local aimbotFovCircle = (Drawing and Drawing.new("Circle")) :: any
 if aimbotFovCircle then
     aimbotFovCircle.Thickness = 1
-    aimbotFovCircle.NumSides = 32
+    aimbotFovCircle.NumSides = 48
     aimbotFovCircle.Filled = false
     aimbotFovCircle.Transparency = 0.8
     aimbotFovCircle.Color = IdenticalTheme.Accent
@@ -723,208 +829,14 @@ if aimbotFovCircle then
             local mouseLoc = UserInputService:GetMouseLocation()
             aimbotFovCircle.Visible = true
             aimbotFovCircle.Position = mouseLoc
-            aimbotFovCircle.Radius = Config.AimbotFOV
+            local fovScale = 70 / math.max(Camera.FieldOfView, 1)
+            aimbotFovCircle.Radius = Config.AimbotFOV * fovScale
             aimbotFovCircle.Color = Config.FOVColor
         else
             aimbotFovCircle.Visible = false
         end
     end))
 end
-
--- ==========================================
--- LAST DEATH ESP SYSTEM
--- ==========================================
-local lastDeathPosition: Vector3? = nil
-local deathTextDrawing = Drawing.new("Text")
-deathTextDrawing.Center = true
-deathTextDrawing.Font = 2
-deathTextDrawing.Outline = true
-deathTextDrawing.Size = 13
-deathTextDrawing.Visible = false
-deathTextDrawing.Color = Color3.fromRGB(255, 80, 80)
-TrackDrawing(deathTextDrawing)
-
-local deathChamsHighlight: Highlight? = nil
-
-local function UpdateLastDeathTracking()
-    local char = LocalPlayer.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local root = char:FindFirstChild("HumanoidRootPart") :: BasePart?
-
-    if hum and root then
-        hum.Died:Connect(function()
-            lastDeathPosition = root.Position
-            Notify("Last Death", "Death location saved!", Color3.fromRGB(255, 80, 80))
-
-            if deathChamsHighlight then
-                pcall(function() deathChamsHighlight:Destroy() end)
-                deathChamsHighlight = nil
-            end
-        end)
-    end
-end
-
-TrackConnection(LocalPlayer.CharacterAdded:Connect(function(newChar)
-    task.defer(UpdateLastDeathTracking)
-end))
-if LocalPlayer.Character then
-    task.defer(UpdateLastDeathTracking)
-end
-
-TrackConnection(RunService.RenderStepped:Connect(function()
-    if not isRunning or not Config.LastDeathESP or not lastDeathPosition then
-        deathTextDrawing.Visible = false
-        return
-    end
-
-    local char = LocalPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
-    if not root then
-        deathTextDrawing.Visible = false
-        return
-    end
-
-    local dist = (lastDeathPosition - root.Position).Magnitude
-    local sPos, onScreen = Camera:WorldToViewportPoint(lastDeathPosition)
-
-    if not onScreen or sPos.Z <= 0 then
-        deathTextDrawing.Visible = false
-        return
-    end
-
-    deathTextDrawing.Position = Vector2.new(sPos.X, sPos.Y)
-    deathTextDrawing.Text = string.format("[LAST DEATH]\n%d studs", math.round(dist))
-    deathTextDrawing.Visible = true
-end))
-
--- ==========================================
--- RADAR / MINIMAP SYSTEM
--- ==========================================
-local radarCenter = Vector2.new(120, 150)
-local radarBackground = Drawing.new("Circle")
-radarBackground.Visible = false
-radarBackground.Radius = 120
-radarBackground.Position = radarCenter
-radarBackground.Filled = true
-radarBackground.Color = Color3.fromRGB(15, 18, 24)
-radarBackground.Transparency = 0.7
-TrackDrawing(radarBackground)
-
-local radarOutline = Drawing.new("Circle")
-radarOutline.Visible = false
-radarOutline.Radius = 120
-radarOutline.Position = radarCenter
-radarOutline.Filled = false
-radarOutline.Color = Color3.fromRGB(50, 60, 80)
-radarOutline.Thickness = 1
-TrackDrawing(radarOutline)
-
-local radarDots: { [any]: any } = {}
-local radarThrottle = 0
-
-TrackConnection(RunService.RenderStepped:Connect(function()
-    if not isRunning or not Config.RadarEnabled or isUIVisible then
-        radarBackground.Visible = false
-        radarOutline.Visible = false
-        for _, dot in pairs(radarDots) do dot.Visible = false end
-        return
-    end
-
-    radarThrottle += 1
-    if radarThrottle % 3 ~= 0 then return end
-
-    radarBackground.Visible = true
-    radarOutline.Visible = true
-    radarBackground.Radius = Config.RadarSize or 120
-    radarOutline.Radius = Config.RadarSize or 120
-
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart") :: BasePart?
-    if not myRoot then return end
-
-    local myPos = myRoot.Position
-    local myLook = Camera.CFrame.LookVector
-    local myAngle = math.atan2(myLook.X, myLook.Z)
-
-    local activeObjects = {}
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character then
-            local root = p.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
-            local hum = p.Character:FindFirstChildOfClass("Humanoid")
-            if root and hum and hum.Health > 0 then
-                table.insert(activeObjects, { Pos = root.Position, Type = "Player", Color = IdenticalTheme.Accent })
-            end
-        end
-    end
-
-    local dotIndex = 1
-    for _, data in ipairs(activeObjects) do
-        local relPos = data.Pos - myPos
-        local dist = relPos.Magnitude
-
-        if dist <= (Config.RadarMaxDist or 3000) then
-            local rotX = relPos.X * math.cos(-myAngle) - relPos.Z * math.sin(-myAngle)
-            local rotZ = relPos.X * math.sin(-myAngle) + relPos.Z * math.cos(-myAngle)
-
-            local scale = radarBackground.Radius / (Config.RadarMaxDist or 3000)
-            local screenX = radarCenter.X + (rotX * scale)
-            local screenY = radarCenter.Y + (rotZ * scale)
-
-            local finalVec = Vector2.new(screenX, screenY)
-            if (finalVec - radarCenter).Magnitude <= radarBackground.Radius - 4 then
-                local dot = radarDots[dotIndex]
-                if not dot then
-                    dot = Drawing.new("Circle")
-                    dot.Radius = 3
-                    dot.Filled = true
-                    TrackDrawing(dot)
-                    radarDots[dotIndex] = dot
-                end
-                dot.Visible = true
-                dot.Position = finalVec
-                dot.Color = data.Color
-                dotIndex += 1
-            end
-        end
-    end
-
-    for i = dotIndex, #radarDots do
-        if radarDots[i] then radarDots[i].Visible = false end
-    end
-end))
-
--- ==========================================
--- AUTO LOOT SYSTEM
--- ==========================================
-task.spawn(function()
-    while isRunning do
-        if Config.AutoLoot then
-            local char = LocalPlayer.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
-            if root then
-                for _, obj in ipairs(Workspace:GetDescendants()) do
-                    if obj:IsA("ProximityPrompt") and obj.Enabled then
-                        local parentPart = obj.Parent
-                        if parentPart and parentPart:IsA("BasePart") then
-                            if (parentPart.Position - root.Position).Magnitude <= (obj.MaxActivationDistance or 10) then
-                                pcall(function() fireproximityprompt(obj) end)
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        task.wait(0.2)
-    end
-end)
-
-local mainFrame: Frame? = nil
-local targetMainFrame: Frame? = nil
-local TargetInfoGui: ScreenGui? = nil
-local isUIVisible = true
-local ToggleUI: ((boolean?) -> ())? = nil
 
 local function IsInsideRect(pt: Vector2, rPos: Vector2, rSize: Vector2, pad: number?): boolean
     local p = pad or 0
@@ -958,45 +870,6 @@ local function IsOccludedByUI(screenPos: Vector2, elemSize: Vector2?): boolean
         end
     end
     return false
-end
-
-local function GetModelBoundingBoxScreen(model: Model, cam: Camera): (Vector2, Vector2, Vector2, boolean)
-    local cf, size = model:GetBoundingBox()
-    local sx, sy, sz = size.X / 2, size.Y / 2, size.Z / 2
-    local corners = {
-        cf * Vector3.new(sx, sy, sz),
-        cf * Vector3.new(sx, sy, -sz),
-        cf * Vector3.new(sx, -sy, sz),
-        cf * Vector3.new(sx, -sy, -sz),
-        cf * Vector3.new(-sx, sy, sz),
-        cf * Vector3.new(-sx, sy, -sz),
-        cf * Vector3.new(-sx, -sy, sz),
-        cf * Vector3.new(-sx, -sy, -sz),
-    }
-
-    local minX, minY = math.huge, math.huge
-    local maxX, maxY = -math.huge, -math.huge
-    local onScreenCount = 0
-
-    for _, worldPos in ipairs(corners) do
-        local screenPos, onScreen = cam:WorldToViewportPoint(worldPos)
-        if onScreen and screenPos.Z > 0 then
-            onScreenCount += 1
-        end
-        minX = math.min(minX, screenPos.X)
-        minY = math.min(minY, screenPos.Y)
-        maxX = math.max(maxX, screenPos.X)
-        maxY = math.max(maxY, screenPos.Y)
-    end
-
-    if onScreenCount == 0 then
-        return Vector2.zero, Vector2.zero, Vector2.zero, false
-    end
-
-    local pos = Vector2.new(minX, minY)
-    local size2d = Vector2.new(maxX - minX, maxY - minY)
-    local center = Vector2.new((minX + maxX) / 2, (minY + maxY) / 2)
-    return pos, size2d, center, true
 end
 
 local playerEspDrawings: { [Player]: { Box: any, HealthBar: any, NameText: any, DistText: any, Tracer: any } } = {}
@@ -1066,21 +939,36 @@ TrackConnection(Players.PlayerRemoving:Connect(RemovePlayerEsp))
 TrackConnection(RunService.RenderStepped:Connect(function()
     if not isRunning or not Config.PlayerESP then
         for _, esp in pairs(playerEspDrawings) do
-            if esp then
-                esp.Box.Visible = false
-                esp.HealthBar.Visible = false
-                esp.NameText.Visible = false
-                esp.DistText.Visible = false
-                esp.Tracer.Visible = false
-            end
+            esp.Box.Visible = false
+            esp.HealthBar.Visible = false
+            esp.NameText.Visible = false
+            esp.DistText.Visible = false
+            esp.Tracer.Visible = false
         end
         return
     end
 
     local cam = Workspace.CurrentCamera or Camera
+    Camera = cam
+
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart") :: BasePart?
-    if not myRoot then return end
+    if not myRoot then
+        for _, esp in pairs(playerEspDrawings) do
+            esp.Box.Visible = false
+            esp.HealthBar.Visible = false
+            esp.NameText.Visible = false
+            esp.DistText.Visible = false
+            esp.Tracer.Visible = false
+        end
+        return
+    end
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and not playerEspDrawings[p] then
+            CreatePlayerEsp(p)
+        end
+    end
 
     for p, esp in pairs(playerEspDrawings) do
         local char = p.Character
@@ -1090,53 +978,61 @@ TrackConnection(RunService.RenderStepped:Connect(function()
         if char and root and hum and hum.Health > 0 then
             local dist = (root.Position - myRoot.Position).Magnitude
             if dist <= Config.PlayerMaxDist then
-                local boxPos, boxSize, boxCenter, onScreen = GetModelBoundingBoxScreen(char, cam)
+                local rootPos, onScreen = cam:WorldToViewportPoint(root.Position)
+                if onScreen and rootPos.Z > 0 then
+                    local head = char:FindFirstChild("Head") :: BasePart?
+                    local headWorld = if head then head.Position + Vector3.new(0, 0.6, 0) else root.Position + Vector3.new(0, 2.5, 0)
+                    local legWorld = root.Position - Vector3.new(0, 3.0, 0)
 
-                if onScreen then
-                    local offsetX = Config.ESPOffsetX or 0
-                    local offsetY = Config.ESPOffsetY or 0
-                    local topLeft = boxPos + Vector2.new(offsetX, offsetY)
-                    local width, height = boxSize.X, boxSize.Y
+                    local headPos = cam:WorldToViewportPoint(headWorld)
+                    local legPos = cam:WorldToViewportPoint(legWorld)
 
-                    if Config.ESPBoxes then
+                    local height = math.abs(legPos.Y - headPos.Y)
+                    local width = height * 0.55
+                    local topY = math.min(headPos.Y, legPos.Y)
+                    local topLeft = Vector2.new(rootPos.X - width * 0.5, topY)
+
+                    local isOccluded = IsOccludedByUI(topLeft, Vector2.new(width, height)) or IsOccludedByUI(Vector2.new(rootPos.X, rootPos.Y))
+
+                    if not isOccluded and Config.ESPBoxes then
                         esp.Box.Visible = true
-                        esp.Box.Size = boxSize
+                        esp.Box.Size = Vector2.new(width, height)
                         esp.Box.Position = topLeft
                         esp.Box.Color = IdenticalTheme.Accent
                     else
                         esp.Box.Visible = false
                     end
 
-                    if Config.ESPHealthBar then
+                    if not isOccluded and Config.ESPHealthBar then
                         esp.HealthBar.Visible = true
                         local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-                        esp.HealthBar.From = Vector2.new(topLeft.X - 4, topLeft.Y + height)
-                        esp.HealthBar.To = Vector2.new(topLeft.X - 4, topLeft.Y + (height * (1 - hpRatio)))
+                        esp.HealthBar.From = Vector2.new(topLeft.X - 4, topY + height)
+                        esp.HealthBar.To = Vector2.new(topLeft.X - 4, topY + (height * (1 - hpRatio)))
                         esp.HealthBar.Color = Color3.fromRGB(math.floor(255 * (1 - hpRatio)), math.floor(255 * hpRatio), 40)
                     else
                         esp.HealthBar.Visible = false
                     end
 
-                    if Config.ESPNames then
+                    if not isOccluded and Config.ESPNames then
                         esp.NameText.Visible = true
                         esp.NameText.Text = p.Name
-                        esp.NameText.Position = Vector2.new(boxCenter.X + offsetX, topLeft.Y - 14)
+                        esp.NameText.Position = Vector2.new(rootPos.X, topY - 14)
                     else
                         esp.NameText.Visible = false
                     end
 
-                    if Config.ESPDistance then
+                    if not isOccluded and Config.ESPDistance then
                         esp.DistText.Visible = true
                         esp.DistText.Text = string.format("%d studs", math.round(dist))
-                        esp.DistText.Position = Vector2.new(boxCenter.X + offsetX, topLeft.Y + height + 2)
+                        esp.DistText.Position = Vector2.new(rootPos.X, topY + height + 2)
                     else
                         esp.DistText.Visible = false
                     end
 
-                    if Config.ESPTracers then
+                    if not isOccluded and Config.ESPTracers then
                         esp.Tracer.Visible = true
                         esp.Tracer.From = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y)
-                        esp.Tracer.To = Vector2.new(boxCenter.X + offsetX, topLeft.Y + height)
+                        esp.Tracer.To = Vector2.new(rootPos.X, topY + height)
                         esp.Tracer.Color = IdenticalTheme.Accent
                     else
                         esp.Tracer.Visible = false
@@ -1166,19 +1062,11 @@ TrackConnection(RunService.RenderStepped:Connect(function()
 end))
 
 local activeWorldDrawings: { [Instance]: any } = {}
-local activeChams: { [Instance]: Highlight } = {}
--- Native BillboardGui/Highlight visuals for dropped loot.
--- These do not depend on executor Drawing support, so they also work on Android/mobile executors.
-local droppedItemVisuals: { [Instance]: { Gui: BillboardGui, Label: TextLabel, Highlight: Highlight? } } = {}
 
 local function ClearWorldDrawing(inst: Instance)
     if activeWorldDrawings[inst] then
         pcall(function() activeWorldDrawings[inst]:Remove() end)
         activeWorldDrawings[inst] = nil
-    end
-    if activeChams[inst] then
-        pcall(function() activeChams[inst]:Destroy() end)
-        activeChams[inst] = nil
     end
 end
 
@@ -1196,9 +1084,40 @@ local function TrackContainer(container: Instance)
     text.Visible = false
     activeWorldDrawings[container] = text
 
-    local lastInvCheck = 0
-    local cachedText = ""
-    local cachedColor = Color3.fromRGB(220, 220, 220)
+    local lastSummaryUpdate = 0
+    local cachedLootSummary = ""
+    local cachedTotalPrice = 0
+    local cachedTotalVal = 0
+    local cachedNameStr = container:GetAttribute("DisplayName") or container.Name
+
+    local function UpdateInventorySummary()
+        local inv = container:FindFirstChild("Inventory")
+        local totalPrice, totalVal, lootSummary = 0, 0, ""
+        if inv then
+            for _, item in ipairs(inv:GetChildren()) do
+                local props = item:FindFirstChild("ItemProperties")
+                if props then
+                    local callSign = props:GetAttribute("CallSign") or item.Name
+                    local amount = props:GetAttribute("Amount") or 1
+                    totalPrice += (props:GetAttribute("Price") or 0)
+                    totalVal += ((ValueCache[callSign] or 0) * amount)
+                    lootSummary = lootSummary .. string.format("\n• %s (x%d)", callSign, amount)
+                end
+            end
+        end
+        cachedLootSummary = lootSummary
+        cachedTotalPrice = totalPrice
+        cachedTotalVal = totalVal
+        cachedNameStr = container:GetAttribute("DisplayName") or container.Name
+    end
+
+    UpdateInventorySummary()
+
+    local inv = container:FindFirstChild("Inventory")
+    if inv then
+        inv.ChildAdded:Connect(UpdateInventorySummary)
+        inv.ChildRemoved:Connect(UpdateInventorySummary)
+    end
 
     local conn: RBXScriptConnection?
     conn = TrackConnection(RunService.RenderStepped:Connect(function()
@@ -1216,84 +1135,29 @@ local function TrackContainer(container: Instance)
         end
 
         local dist = (cPart.Position - root.Position).Magnitude
-        if dist > (Config.ContainerMaxDist or 3000) then
+        if dist > (Config.ContainerMaxDist or 300) then
             text.Visible = false
             return
         end
 
-        local _, _, boxCenter, onScreen = GetModelBoundingBoxScreen(container, Camera)
-        if not onScreen or isUIVisible then
+        local sPos, onScreen = Camera:WorldToViewportPoint(cPart.Position)
+        if not onScreen or sPos.Z <= 0 or (Config.HideESPInMenu and isUIVisible) or IsOccludedByUI(Vector2.new(sPos.X, sPos.Y)) then
             text.Visible = false
             return
         end
 
-        local now = tick()
-        if now - lastInvCheck > 2.0 then
-            lastInvCheck = now
-            local inv = container:FindFirstChild("Inventory")
-            local totalPrice, totalVal, lootSummary = 0, 0, ""
-            
-            if inv then
-                for _, item in ipairs(inv:GetChildren()) do
-                    local props = item:FindFirstChild("ItemProperties")
-                    if props then
-                        local callSign = props:GetAttribute("CallSign") or item.Name
-                        local amount = props:GetAttribute("Amount") or 1
-                        totalPrice += (props:GetAttribute("Price") or 0)
-                        totalVal += ((ValueCache[callSign] or 0) * amount)
-                        lootSummary = lootSummary .. string.format("\n• %s (x%d)", callSign, amount)
-                    end
-                end
-            end
-
-            local nextSpawn = (container:GetAttribute("NextSpawn") or 0) - os.time()
-            local nameStr = container:GetAttribute("DisplayName") or container.Name
-            local spawnStr = if nextSpawn > 0 then string.format(" [Respawn: %ds]", nextSpawn) else ""
-
-            cachedColor = GetItemColor(totalVal)
-            cachedText = string.format("[BOX] %s ($%d)%s%s\n", nameStr, totalPrice, spawnStr, lootSummary)
+        local now = os.time()
+        if now - lastSummaryUpdate >= 1 then
+            lastSummaryUpdate = now
+            UpdateInventorySummary()
         end
 
-        local finalColor = cachedColor
-        local finalSize = 12
-        local finalZIndex = 1
+        local nextSpawn = (tonumber(container:GetAttribute("NextSpawn")) or 0) - now
+        local spawnStr = if nextSpawn > 0 then string.format(" [Respawn: %ds]", nextSpawn) else ""
 
-        if Config.ContainerFilterEnabled then
-            local isMatch = false
-            local checkString = cachedText:lower()
-            
-            if type(Config.ContainerFilterText) == "string" and Config.ContainerFilterText ~= "" then
-                local filters = string.split(Config.ContainerFilterText:lower(), ",")
-                for _, f in ipairs(filters) do
-                    local cleanF = f:match("^%s*(.-)%s*$")
-                    if cleanF ~= "" and string.find(checkString, cleanF, 1, true) then
-                        isMatch = true
-                        break
-                    end
-                end
-            end
-
-            if not isMatch and type(Config.ContainerKeywords) == "table" then
-                for _, kw in ipairs(Config.ContainerKeywords) do
-                    if type(kw) == "string" and kw ~= "" and string.find(checkString, kw:lower(), 1, true) then
-                        isMatch = true
-                        break
-                    end
-                end
-            end
-
-            if isMatch then
-                finalColor = Color3.fromRGB(168, 85, 247)
-                finalSize = 15
-                finalZIndex = 999
-            end
-        end
-
-        text.Color = finalColor
-        text.Size = finalSize
-        pcall(function() text.ZIndex = finalZIndex end)
-        text.Position = boxCenter
-        text.Text = cachedText .. math.round(dist) .. " studs"
+        text.Color = GetItemColor(cachedTotalVal)
+        text.Position = Vector2.new(sPos.X, sPos.Y)
+        text.Text = string.format("[BOX] %s ($%d)%s%s\n%d studs", cachedNameStr, cachedTotalPrice, spawnStr, cachedLootSummary, math.round(dist))
         text.Visible = true
     end))
 
@@ -1393,13 +1257,13 @@ local function TrackExplosiveOrPart(part: BasePart)
         end
 
         local dist = (part.Position - myRoot.Position).Magnitude
-        if dist > (Config.NPCMaxDist or 15000) then
+        if dist > (Config.NPCMaxDist or 1500) then
             text.Visible = false
             return
         end
 
         local sPos, onScreen = Camera:WorldToViewportPoint(part.Position)
-        if not onScreen or sPos.Z <= 0 or isUIVisible then
+        if not onScreen or sPos.Z <= 0 or (Config.HideESPInMenu and isUIVisible) or IsOccludedByUI(Vector2.new(sPos.X, sPos.Y)) then
             text.Visible = false
             return
         end
@@ -1417,94 +1281,8 @@ local function TrackExplosiveOrPart(part: BasePart)
     end)
 end
 
-local function IsMineOrExplosive(name: string): boolean
-    local lower = name:lower()
-    return lower:find("mine") or lower:find("pmn") or lower:find("mon") or lower:find("claymore") or lower:find("explosive") or lower:find("trap")
-end
-
-local function TrackGlobalMine(mine: Instance)
-    if not Drawing or activeWorldDrawings[mine] then return end
-
-    pcall(function()
-        if not activeChams[mine] and (mine:IsA("Model") or mine:IsA("BasePart")) then
-            local hl = Instance.new("Highlight")
-            hl.Name = "Identical_GlobalMineChams"
-            hl.Adornee = mine
-            hl.FillColor = Color3.fromRGB(255, 50, 50)
-            hl.FillTransparency = 0.4
-            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-            hl.OutlineTransparency = 0
-            hl.Parent = CoreGui
-            activeChams[mine] = hl
-        end
-    end)
-
-    local text = Drawing.new("Text")
-    TrackDrawing(text)
-    text.Center = true
-    text.Font = 2
-    text.Outline = true
-    text.Size = 12
-    text.Visible = false
-    text.Color = Color3.fromRGB(255, 60, 60)
-    activeWorldDrawings[mine] = text
-
-    local conn: RBXScriptConnection?
-    conn = TrackConnection(RunService.RenderStepped:Connect(function()
-        if not isRunning or not Config.NPC_ESP or not mine.Parent then
-            text.Visible = false
-            if activeChams[mine] then activeChams[mine].Enabled = false end
-            return
-        end
-
-        local char = LocalPlayer.Character
-        local myRoot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
-        if not myRoot or not mine.Parent then
-            text.Visible = false
-            return
-        end
-
-        local targetPart = if mine:IsA("Model") then (mine.PrimaryPart or mine:FindFirstChildWhichIsA("BasePart")) else (mine:IsA("BasePart") and mine or nil)
-        if not targetPart or not targetPart.Parent then
-            text.Visible = false
-            if activeChams[mine] then activeChams[mine].Enabled = false end
-            return
-        end
-
-        local dist = (targetPart.Position - myRoot.Position).Magnitude
-        if dist > (Config.NPCMaxDist or 15000) then
-            text.Visible = false
-            if activeChams[mine] then activeChams[mine].Enabled = false end
-            return
-        end
-
-        if activeChams[mine] then activeChams[mine].Enabled = true end
-
-        local sPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-        if not onScreen or sPos.Z <= 0 or isUIVisible then
-            text.Visible = false
-            return
-        end
-
-        text.Position = Vector2.new(sPos.X, sPos.Y)
-        text.Text = string.format("[MINE: %s]\n%d studs", mine.Name, math.round(dist))
-        text.Visible = true
-    end))
-
-    mine.AncestryChanged:Connect(function(_, parent)
-        if not parent then
-            if conn then conn:Disconnect() end
-            ClearWorldDrawing(mine)
-        end
-    end)
-end
-
 local function TrackNPC(npc: Instance)
     if npc:IsA("Model") then
-        if IsMineOrExplosive(npc.Name) then
-            TrackGlobalMine(npc)
-            return
-        end
         trackedNPCs[npc] = true
         CreateNpcEsp(npc)
         npc.AncestryChanged:Connect(function(_, parent)
@@ -1513,10 +1291,6 @@ local function TrackNPC(npc: Instance)
             end
         end)
     elseif npc:IsA("BasePart") then
-        if IsMineOrExplosive(npc.Name) then
-            TrackGlobalMine(npc)
-            return
-        end
         TrackExplosiveOrPart(npc)
     end
 end
@@ -1524,21 +1298,30 @@ end
 TrackConnection(RunService.RenderStepped:Connect(function()
     if not isRunning or not Config.NPC_ESP then
         for _, esp in pairs(npcEspDrawings) do
-            if esp then
-                esp.Box.Visible = false
-                esp.HealthBar.Visible = false
-                esp.NameText.Visible = false
-                esp.DistText.Visible = false
-                esp.Tracer.Visible = false
-            end
+            esp.Box.Visible = false
+            esp.HealthBar.Visible = false
+            esp.NameText.Visible = false
+            esp.DistText.Visible = false
+            esp.Tracer.Visible = false
         end
         return
     end
 
     local cam = Workspace.CurrentCamera or Camera
+    Camera = cam
+
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart") :: BasePart?
-    if not myRoot then return end
+    if not myRoot then
+        for _, esp in pairs(npcEspDrawings) do
+            esp.Box.Visible = false
+            esp.HealthBar.Visible = false
+            esp.NameText.Visible = false
+            esp.DistText.Visible = false
+            esp.Tracer.Visible = false
+        end
+        return
+    end
 
     for npc, _ in pairs(trackedNPCs) do
         if npc and npc.Parent and not npcEspDrawings[npc] then
@@ -1552,72 +1335,95 @@ TrackConnection(RunService.RenderStepped:Connect(function()
             continue
         end
 
+        local root = npc.PrimaryPart or (npc:FindFirstChild("HumanoidRootPart") :: BasePart?) or (npc:FindFirstChild("Torso") :: BasePart?) or (npc:FindFirstChild("UpperTorso") :: BasePart?)
         local hum = npc:FindFirstChildOfClass("Humanoid")
-        local root = npc.PrimaryPart or npc:FindFirstChild("HumanoidRootPart") :: BasePart?
+        local head = npc:FindFirstChild("Head") :: BasePart?
+
+        if not root and head then
+            root = head
+        end
 
         if root and hum and hum.Health > 0 then
             local dist = (root.Position - myRoot.Position).Magnitude
-            if dist <= (Config.NPCMaxDist or 15000) then
-                local boxPos, boxSize, boxCenter, onScreen = GetModelBoundingBoxScreen(npc, cam)
+            if dist <= (Config.NPCMaxDist or 1500) then
+                local rootPos, onScreen = cam:WorldToViewportPoint(root.Position)
+                if onScreen and rootPos.Z > 0 then
+                    local headWorld = if head then head.Position + Vector3.new(0, 0.6, 0) else root.Position + Vector3.new(0, 2.5, 0)
+                    local foot = npc:FindFirstChild("LeftFoot") or npc:FindFirstChild("RightFoot") or npc:FindFirstChild("Left Leg") or npc:FindFirstChild("Right Leg")
+                    local legWorld = if foot and foot:IsA("BasePart") then foot.Position - Vector3.new(0, 0.5, 0) else root.Position - Vector3.new(0, 3.0, 0)
 
-                if onScreen and not isUIVisible then
-                    local offsetX = Config.ESPOffsetX or 0
-                    local offsetY = Config.ESPOffsetY or 0
-                    local topLeft = boxPos + Vector2.new(offsetX, offsetY)
-                    local width, height = boxSize.X, boxSize.Y
+                    local headPos = cam:WorldToViewportPoint(headWorld)
+                    local legPos = cam:WorldToViewportPoint(legWorld)
+
+                    local height = math.abs(legPos.Y - headPos.Y)
+                    local width = height * 0.55
+                    local topY = math.min(headPos.Y, legPos.Y)
+                    local topLeft = Vector2.new(rootPos.X - width * 0.5, topY)
+
+                    local isOccluded = (Config.HideESPInMenu and isUIVisible) or IsOccludedByUI(topLeft, Vector2.new(width, height)) or IsOccludedByUI(Vector2.new(rootPos.X, rootPos.Y))
 
                     local dispName = npc:GetAttribute("DisplayName")
                     local nameStr = (dispName and tostring(dispName)) or npc:GetAttribute("CallSign") or npc.Name
-                    
+                    if dispName and dispName ~= npc.Name then
+                        nameStr = string.format("%s (%s)", tostring(dispName), npc.Name)
+                    end
+
+                    local interaction = npc:GetAttribute("Interaction")
                     local tag = "[AI]"
                     local tagColor = Color3.fromRGB(255, 85, 85)
 
-                    if npc:GetAttribute("Interaction") or npc:FindFirstChild("faceTarget") then
+                    if interaction or npc:FindFirstChild("faceTarget") then
                         tag = "[VENDOR]"
                         tagColor = Color3.fromRGB(80, 220, 160)
+                    elseif ValidNPCNames[npc.Name] or npc:GetAttribute("Preset") or npc.Name:find("AI") then
+                        tag = "[AI]"
+                        tagColor = Color3.fromRGB(255, 85, 85)
+                    else
+                        tag = "[AI]"
+                        tagColor = Color3.fromRGB(255, 110, 90)
                     end
 
-                    if Config.ESPBoxes then
+                    if not isOccluded and Config.ESPBoxes then
                         esp.Box.Visible = true
-                        esp.Box.Size = boxSize
+                        esp.Box.Size = Vector2.new(width, height)
                         esp.Box.Position = topLeft
                         esp.Box.Color = tagColor
                     else
                         esp.Box.Visible = false
                     end
 
-                    if Config.ESPHealthBar then
+                    if not isOccluded and Config.ESPHealthBar then
                         esp.HealthBar.Visible = true
                         local maxHp = math.max(hum.MaxHealth, 1)
                         local hpRatio = math.clamp(hum.Health / maxHp, 0, 1)
-                        esp.HealthBar.From = Vector2.new(topLeft.X - 4, topLeft.Y + height)
-                        esp.HealthBar.To = Vector2.new(topLeft.X - 4, topLeft.Y + (height * (1 - hpRatio)))
+                        esp.HealthBar.From = Vector2.new(topLeft.X - 4, topY + height)
+                        esp.HealthBar.To = Vector2.new(topLeft.X - 4, topY + (height * (1 - hpRatio)))
                         esp.HealthBar.Color = Color3.fromRGB(math.floor(255 * (1 - hpRatio)), math.floor(255 * hpRatio), 40)
                     else
                         esp.HealthBar.Visible = false
                     end
 
-                    if Config.ESPNames then
+                    if not isOccluded and Config.ESPNames then
                         esp.NameText.Visible = true
                         esp.NameText.Text = string.format("%s %s", tag, nameStr)
-                        esp.NameText.Position = Vector2.new(boxCenter.X + offsetX, topLeft.Y - 14)
+                        esp.NameText.Position = Vector2.new(rootPos.X, topY - 14)
                         esp.NameText.Color = tagColor
                     else
                         esp.NameText.Visible = false
                     end
 
-                    if Config.ESPDistance then
+                    if not isOccluded and Config.ESPDistance then
                         esp.DistText.Visible = true
                         esp.DistText.Text = string.format("%d studs", math.round(dist))
-                        esp.DistText.Position = Vector2.new(boxCenter.X + offsetX, topLeft.Y + height + 2)
+                        esp.DistText.Position = Vector2.new(rootPos.X, topY + height + 2)
                     else
                         esp.DistText.Visible = false
                     end
 
-                    if Config.ESPTracers then
+                    if not isOccluded and Config.ESPTracers then
                         esp.Tracer.Visible = true
                         esp.Tracer.From = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y)
-                        esp.Tracer.To = Vector2.new(boxCenter.X + offsetX, topLeft.Y + height)
+                        esp.Tracer.To = Vector2.new(rootPos.X, topY + height)
                         esp.Tracer.Color = tagColor
                     else
                         esp.Tracer.Visible = false
@@ -1645,6 +1451,7 @@ TrackConnection(RunService.RenderStepped:Connect(function()
         end
     end
 end))
+
 
 local function TrackVehicle(veh: Instance)
     if not Drawing or activeWorldDrawings[veh] or not veh:IsA("Model") then return end
@@ -1676,18 +1483,18 @@ local function TrackVehicle(veh: Instance)
         end
 
         local dist = (root.Position - myRoot.Position).Magnitude
-        if dist > (Config.VehicleMaxDist or 15000) then
+        if dist > (Config.VehicleMaxDist or 1500) then
             text.Visible = false
             return
         end
 
-        local _, _, boxCenter, onScreen = GetModelBoundingBoxScreen(veh, Camera)
-        if not onScreen or isUIVisible then
+        local sPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+        if not onScreen or sPos.Z <= 0 or (Config.HideESPInMenu and isUIVisible) or IsOccludedByUI(Vector2.new(sPos.X, sPos.Y)) then
             text.Visible = false
             return
         end
 
-        text.Position = boxCenter
+        text.Position = Vector2.new(sPos.X, sPos.Y)
         text.Text = string.format("[VEHICLE] %s\n%d studs", veh.Name, math.round(dist))
         text.Visible = true
     end))
@@ -1700,226 +1507,278 @@ local function TrackVehicle(veh: Instance)
     end)
 end
 
-local function GetItemDisplayName(item: Instance): string
+local function GetDroppedItemRoot(item: Instance): BasePart?
+    if item:IsA("BasePart") then
+        return item
+    elseif item:IsA("Tool") then
+        local handle = item:FindFirstChild("Handle")
+        if handle and handle:IsA("BasePart") then return handle end
+        return item:FindFirstChildWhichIsA("BasePart", true)
+    elseif item:IsA("Model") then
+        if item.PrimaryPart then return item.PrimaryPart end
+        local handle = item:FindFirstChild("Handle", true)
+        if handle and handle:IsA("BasePart") then return handle end
+        return item:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return item:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function GetDroppedItemName(item: Instance): string
     local callSign = item:GetAttribute("CallSign")
-    local itemName = item:GetAttribute("ItemName")
-    if callSign ~= nil and tostring(callSign) ~= "" then
-        return tostring(callSign)
+        or item:GetAttribute("ItemName")
+        or item:GetAttribute("Name")
+    if type(callSign) == "string" and callSign ~= "" then
+        return callSign
     end
-    if itemName ~= nil and tostring(itemName) ~= "" then
-        return tostring(itemName)
-    end
-
-    local props = item:FindFirstChild("ItemProperties", true)
-    if props then
-        local propCallSign = props:GetAttribute("CallSign")
-        local propItemName = props:GetAttribute("ItemName")
-        if propCallSign ~= nil and tostring(propCallSign) ~= "" then
-            return tostring(propCallSign)
-        end
-        if propItemName ~= nil and tostring(propItemName) ~= "" then
-            return tostring(propItemName)
-        end
-    end
-
     return item.Name
 end
 
-local function GetWorldPart(item: Instance): BasePart?
-    if item:IsA("BasePart") then
-        return item
-    end
-    if item:IsA("Model") then
-        return item.PrimaryPart
-            or item:FindFirstChild("Handle", true) :: BasePart?
-            or item:FindFirstChildWhichIsA("BasePart", true)
-    end
-    return nil
-end
-
-local function IsInsideNamedFolder(item: Instance): boolean
-    local cur = item.Parent
-    local depth = 0
-    while cur and cur ~= Workspace and depth < 8 do
-        local n = cur.Name:lower()
-        if n:find("dropped")
-            or n:find("grounditem")
-            or n:find("ground_item")
-            or n == "loot"
-            or n:find("worlditem")
-            or n:find("world_item") then
+local function LooksLikeDroppedItem(item: Instance): boolean
+    if item:IsA("Tool") then return true end
+    if not (item:IsA("Model") or item:IsA("BasePart")) then return false end
+    if item:GetAttribute("CallSign") or item:GetAttribute("ItemName") then return true end
+    if ValidItemNames[item.Name] then return true end
+    local parent = item.Parent
+    while parent and parent ~= Workspace do
+        local n = parent.Name:lower()
+        if n == "droppeditems" or n:find("dropped") or n:find("loot") then
             return true
         end
-        cur = cur.Parent
-        depth += 1
+        parent = parent.Parent
     end
     return false
 end
 
-local function IsLikelyDroppedItem(item: Instance): boolean
-    if not item or not item.Parent then return false end
-    if not (item:IsA("Model") or item:IsA("BasePart")) then return false end
-
-    -- Never classify character/vehicle/container/NPC geometry as loot.
-    if item:FindFirstChildOfClass("Humanoid") then return false end
-    if item:FindFirstChild("Inventory") then return false end
-    if item:GetAttribute("Preset") ~= nil or item:GetAttribute("Interaction") ~= nil then
-        return false
-    end
-
-    local displayName = GetItemDisplayName(item)
-    local props = item:FindFirstChild("ItemProperties", true)
-
-    return IsInsideNamedFolder(item)
-        or item:GetAttribute("CallSign") ~= nil
-        or item:GetAttribute("ItemName") ~= nil
-        or props ~= nil
-        or ValidItemNames[item.Name] == true
-        or ValueCache[displayName] ~= nil
-end
-
-local function DestroyDroppedItemVisual(item: Instance)
-    local visual = droppedItemVisuals[item]
-    if not visual then return end
-
-    pcall(function()
-        visual.Gui:Destroy()
-    end)
-    if visual.Highlight then
-        pcall(function()
-            visual.Highlight:Destroy()
-        end)
-    end
-
-    droppedItemVisuals[item] = nil
-end
-
 local function TrackDroppedItem(item: Instance)
-    if not item or not item.Parent then return end
-    if not (item:IsA("Model") or item:IsA("BasePart")) then return end
-    if droppedItemVisuals[item] then return end
-    if not IsLikelyDroppedItem(item) then return end
+    if not Drawing or activeWorldDrawings[item] or not LooksLikeDroppedItem(item) then return end
+    local root = GetDroppedItemRoot(item)
+    if not root then return end
 
-    local root = GetWorldPart(item)
-    if not root then
-        -- Item models sometimes receive their Handle/BasePart a frame after spawning.
-        task.defer(function()
-            if item.Parent and not droppedItemVisuals[item] then
-                TrackDroppedItem(item)
-            end
-        end)
-        return
-    end
-
-    local gui = Instance.new("BillboardGui")
-    gui.Name = "Identical_DroppedItemESP"
-    gui.Adornee = root
-    gui.AlwaysOnTop = true
-    gui.LightInfluence = 0
-    gui.MaxDistance = Config.DroppedItemMaxDist or 3000
-    gui.Size = UDim2.fromOffset(220, 42)
-    gui.StudsOffsetWorldSpace = Vector3.new(0, 2.4, 0)
-    gui.ResetOnSpawn = false
-    gui.Parent = RootGui
-
-    local label = Instance.new("TextLabel")
-    label.Name = "Label"
-    label.Size = UDim2.fromScale(1, 1)
-    label.BackgroundTransparency = 1
-    label.Font = IdenticalBoldFont
-    label.TextSize = 13
-    label.TextColor3 = Color3.fromRGB(240, 245, 255)
-    label.TextStrokeTransparency = 0
-    label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    label.TextWrapped = true
-    label.TextYAlignment = Enum.TextYAlignment.Center
-    label.Parent = gui
-
-    -- Native Highlight gives a visible object marker even when the label is small.
-    local hl: Highlight? = nil
-    pcall(function()
-        hl = Instance.new("Highlight")
-        hl.Name = "Identical_DroppedItemHighlight"
-        hl.Adornee = item
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.FillTransparency = 0.82
-        hl.OutlineTransparency = 0.05
-        hl.Parent = RootGui
-    end)
-
-    droppedItemVisuals[item] = {
-        Gui = gui,
-        Label = label,
-        Highlight = hl,
-    }
+    local text = Drawing.new("Text")
+    TrackDrawing(text)
+    text.Center = true
+    text.Font = 2
+    text.Outline = true
+    text.Size = 12
+    text.Visible = false
+    activeWorldDrawings[item] = text
 
     local conn: RBXScriptConnection?
     conn = TrackConnection(RunService.RenderStepped:Connect(function()
-        local visual = droppedItemVisuals[item]
-        if not visual then
-            if conn then conn:Disconnect() end
-            return
-        end
-
         if not isRunning or not item.Parent or not Config.DroppedItemESP then
-            visual.Gui.Enabled = false
-            if visual.Highlight then visual.Highlight.Enabled = false end
+            text.Visible = false
             return
         end
 
-        local myChar = LocalPlayer.Character
-        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart") :: BasePart?
-        local currentRoot = GetWorldPart(item)
+        if not root or not root.Parent then
+            root = GetDroppedItemRoot(item)
+            if not root then
+                text.Visible = false
+                return
+            end
+        end
 
-        if not myRoot or not currentRoot or not currentRoot.Parent then
-            visual.Gui.Enabled = false
-            if visual.Highlight then visual.Highlight.Enabled = false end
+        local char = LocalPlayer.Character
+        local myRoot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+        if not myRoot then
+            text.Visible = false
             return
         end
 
-        if visual.Gui.Adornee ~= currentRoot then
-            visual.Gui.Adornee = currentRoot
-        end
-
-        local dist = (currentRoot.Position - myRoot.Position).Magnitude
-        if dist > (Config.DroppedItemMaxDist or 3000) then
-            visual.Gui.Enabled = false
-            if visual.Highlight then visual.Highlight.Enabled = false end
+        local dist = (root.Position - myRoot.Position).Magnitude
+        if dist > (Config.DroppedItemMaxDist or 300) then
+            text.Visible = false
             return
         end
 
-        local displayName = GetItemDisplayName(item)
-        local val = ValueCache[displayName] or ValueCache[item.Name] or 0
-        local itemColor = GetItemColor(val)
-
-        visual.Gui.MaxDistance = Config.DroppedItemMaxDist or 3000
-        visual.Label.TextColor3 = itemColor
-        visual.Label.Text = string.format("[ITEM] %s ($%d)\n%d studs", displayName, val, math.round(dist))
-        visual.Gui.Enabled = not isUIVisible
-
-        if visual.Highlight then
-            visual.Highlight.FillColor = itemColor
-            visual.Highlight.OutlineColor = itemColor
-            visual.Highlight.Enabled = not isUIVisible
+        local sPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+        if not onScreen or sPos.Z <= 0 or (Config.HideESPInMenu and isUIVisible) or IsOccludedByUI(Vector2.new(sPos.X, sPos.Y)) then
+            text.Visible = false
+            return
         end
+
+        local callSign = GetDroppedItemName(item)
+        local val = ValueCache[callSign] or ValueCache[item.Name] or 0
+        text.Color = GetItemColor(val)
+        text.Position = Vector2.new(sPos.X, sPos.Y)
+        text.Text = string.format("[ITEM] %s ($%d)\n%d studs", callSign, val, math.round(dist))
+        text.Visible = true
     end))
 
-    item.AncestryChanged:Connect(function(_, parent)
+    TrackConnection(item.AncestryChanged:Connect(function(_, parent)
         if not parent then
             if conn then conn:Disconnect() end
-            DestroyDroppedItemVisual(item)
+            ClearWorldDrawing(item)
+        end
+    end))
+end
+
+local function TrackExtraction(exitInst: Instance)
+    if not Drawing or activeWorldDrawings[exitInst] then return end
+    local prim: BasePart? = if exitInst:IsA("BasePart") then exitInst elseif exitInst:IsA("Model") then (exitInst.PrimaryPart or exitInst:FindFirstChildWhichIsA("BasePart")) else nil
+    if not prim then return end
+
+    local text = Drawing.new("Text")
+    TrackDrawing(text)
+    text.Center = true
+    text.Font = 2
+    text.Outline = true
+    text.Size = 13
+    text.Visible = false
+    text.Color = Color3.fromRGB(80, 240, 140)
+    activeWorldDrawings[exitInst] = text
+
+    local radius = exitInst:GetAttribute("ZoneRadius") or 0
+    local radiusStr = if radius > 0 then string.format(" (R: %ds)", radius) else ""
+    local nameStr = if exitInst.Name == "Exit" then "Extraction Zone" else exitInst.Name
+
+    local conn: RBXScriptConnection?
+    conn = TrackConnection(RunService.RenderStepped:Connect(function()
+        if not isRunning or not exitInst.Parent or not Config.ExtractionESP then
+            text.Visible = false
+            return
+        end
+
+        local char = LocalPlayer.Character
+        local myRoot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+        if not myRoot or not prim.Parent then
+            text.Visible = false
+            return
+        end
+
+        local dist = (prim.Position - myRoot.Position).Magnitude
+        if dist > (Config.ExtractionMaxDist or 5000) then
+            text.Visible = false
+            return
+        end
+
+        local sPos, onScreen = Camera:WorldToViewportPoint(prim.Position)
+        if not onScreen or sPos.Z <= 0 or (Config.HideESPInMenu and isUIVisible) or IsOccludedByUI(Vector2.new(sPos.X, sPos.Y)) then
+            text.Visible = false
+            return
+        end
+
+        text.Position = Vector2.new(sPos.X, sPos.Y)
+        text.Text = string.format("[EXTRACT] %s%s\n%d studs (%dm)", nameStr, radiusStr, math.round(dist), math.round(dist / 3.5))
+        text.Visible = true
+    end))
+
+    exitInst.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            if conn then conn:Disconnect() end
+            ClearWorldDrawing(exitInst)
         end
     end)
 end
 
+local TrapData: { [string]: { Name: string, Tag: string, Color: Color3 } } = {
+    PMN2 = { Name = "PMN-2 Landmine", Tag = "[TRAP]", Color = Color3.fromRGB(255, 65, 65) },
+    MON50 = { Name = "MON-50 Claymore", Tag = "[TRAP]", Color = Color3.fromRGB(255, 65, 65) },
+    GrenadeTrap = { Name = "Tripwire Grenade", Tag = "[TRAP]", Color = Color3.fromRGB(255, 75, 75) },
+    BigPropaneTank = { Name = "Big Propane Tank", Tag = "[EXPLOSIVE]", Color = Color3.fromRGB(255, 145, 40) },
+    SmallPropaneTank = { Name = "Small Propane Tank", Tag = "[EXPLOSIVE]", Color = Color3.fromRGB(255, 145, 40) },
+}
+
+local function GetTrapInfo(inst: Instance): (string?, string?, Color3?)
+    if inst:FindFirstChild("ItemProperties") then
+        return nil, nil, nil
+    end
+
+    local exact = TrapData[inst.Name]
+    if exact then
+        return exact.Name, exact.Tag, exact.Color
+    end
+
+    local nl = inst.Name:lower()
+    if nl:find("pmn") then
+        return "PMN-2 Landmine", "[TRAP]", Color3.fromRGB(255, 65, 65)
+    elseif nl:find("mon50") or nl:find("claymore") then
+        return "MON-50 Claymore", "[TRAP]", Color3.fromRGB(255, 65, 65)
+    elseif nl:find("grenadetrap") or (nl:find("grenade") and nl:find("trap")) then
+        return "Tripwire Grenade", "[TRAP]", Color3.fromRGB(255, 75, 75)
+    elseif nl:find("landmine") or nl:find("mine") then
+        return "Landmine", "[TRAP]", Color3.fromRGB(255, 65, 65)
+    elseif nl:find("propane") then
+        return inst.Name, "[EXPLOSIVE]", Color3.fromRGB(255, 145, 40)
+    elseif inst:FindFirstChild("GrenadeBody") and inst:FindFirstChild("Trigger") then
+        return "Tripwire Grenade", "[TRAP]", Color3.fromRGB(255, 75, 75)
+    end
+
+    return nil, nil, nil
+end
+
+local function TrackTrap(trapInst: Instance)
+    if not Drawing or activeWorldDrawings[trapInst] then return end
+    local prim: BasePart? = nil
+    if trapInst:IsA("BasePart") then
+        prim = trapInst
+    elseif trapInst:IsA("Model") then
+        local candidate = trapInst:FindFirstChild("MeshPart")
+            or trapInst:FindFirstChild("GrenadeBody")
+            or trapInst.PrimaryPart
+            or trapInst:FindFirstChild("Trigger")
+            or trapInst:FindFirstChildWhichIsA("BasePart")
+        if candidate and candidate:IsA("BasePart") then
+            prim = candidate
+        end
+    end
+    if not prim or not prim:IsA("BasePart") then return end
+
+    local dispName, tag, color = GetTrapInfo(trapInst)
+    if not dispName or not tag or not color then return end
+
+    local text = Drawing.new("Text")
+    TrackDrawing(text)
+    text.Center = true
+    text.Font = 2
+    text.Outline = true
+    text.Size = 12
+    text.Visible = false
+    text.Color = color
+    activeWorldDrawings[trapInst] = text
+
+    local conn: RBXScriptConnection?
+    conn = TrackConnection(RunService.RenderStepped:Connect(function()
+        if not isRunning or not trapInst.Parent or not Config.TrapESP then
+            text.Visible = false
+            return
+        end
+
+        local char = LocalPlayer.Character
+        local myRoot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+        if not myRoot or not prim.Parent then
+            text.Visible = false
+            return
+        end
+
+        local dist = (prim.Position - myRoot.Position).Magnitude
+        if dist > (Config.TrapMaxDist or 1000) then
+            text.Visible = false
+            return
+        end
+
+        local sPos, onScreen = Camera:WorldToViewportPoint(prim.Position)
+        if not onScreen or sPos.Z <= 0 or (Config.HideESPInMenu and isUIVisible) or IsOccludedByUI(Vector2.new(sPos.X, sPos.Y)) then
+            text.Visible = false
+            return
+        end
+
+        text.Position = Vector2.new(sPos.X, sPos.Y)
+        text.Text = string.format("%s %s\n%d studs", tag, dispName, math.round(dist))
+        text.Visible = true
+    end))
+
+    trapInst.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            if conn then conn:Disconnect() end
+            ClearWorldDrawing(trapInst)
+        end
+    end)
+end
 
 task.spawn(function()
     local function ScanObject(v: Instance)
         if not v or not v.Parent then return end
-        if IsMineOrExplosive(v.Name) then
-            TrackGlobalMine(v)
-            return
-        end
         if v:IsA("Humanoid") and v.Parent and v.Parent:IsA("Model") then
             local pModel = v.Parent
             local isPlr = Players:GetPlayerFromCharacter(pModel)
@@ -1931,6 +1790,10 @@ task.spawn(function()
         if v:IsA("Model") then
             local isPlr = Players:GetPlayerFromCharacter(v)
             if not isPlr and v.Name ~= LocalPlayer.Name and not v.Name:lower():find("viewmodel") then
+                if GetTrapInfo(v) then
+                    TrackTrap(v)
+                    return
+                end
                 local hum = v:FindFirstChildOfClass("Humanoid")
                 if not hum then
                     local nameLower = v.Name:lower()
@@ -1940,14 +1803,12 @@ task.spawn(function()
                     if ValidVehicleNames[v.Name] or v:FindFirstChild("DriveSeat") or v:FindFirstChild("VehicleSeat") then
                         TrackVehicle(v)
                     end
-
-                    -- Dropped loot can be nested several levels deep and can be
-                    -- populated after the Model is created. Track the candidate itself
-                    -- instead of requiring Parent == Workspace/DroppedItems.
-                    if IsLikelyDroppedItem(v) then
+                    if LooksLikeDroppedItem(v) and not v:FindFirstChild("Inventory") then
                         TrackDroppedItem(v)
                     end
-
+                    if nameLower:find("extraction") or nameLower == "exit" or nameLower:find("evac") then
+                        TrackExtraction(v)
+                    end
                     if ValidNPCNames[v.Name] or v:GetAttribute("Preset") or v:GetAttribute("Interaction") or v.Name:find("AI") then
                         TrackNPC(v)
                     end
@@ -1955,67 +1816,92 @@ task.spawn(function()
                     TrackNPC(v)
                 end
             end
-        elseif v:IsA("BasePart") then
-            if IsMineOrExplosive(v.Name) then
-                TrackGlobalMine(v)
-                return
-            end
-
-            -- Some loot is represented by a single BasePart rather than a Model.
-            if IsLikelyDroppedItem(v) then
+        elseif v:IsA("Tool") then
+            if LooksLikeDroppedItem(v) then
                 TrackDroppedItem(v)
             end
-        end
-
-        -- ItemProperties/CallSign may be inserted after the loot object spawns.
-        -- Walk upward and retry the nearest Model/BasePart candidate.
-        local ancestor = v
-        for _ = 1, 6 do
-            ancestor = ancestor.Parent
-            if not ancestor or ancestor == Workspace then break end
-            if (ancestor:IsA("Model") or ancestor:IsA("BasePart")) and IsLikelyDroppedItem(ancestor) then
-                TrackDroppedItem(ancestor)
-                break
+        elseif v:IsA("BasePart") then
+            if LooksLikeDroppedItem(v) and not (v.Parent and v.Parent:IsA("Model")) then
+                TrackDroppedItem(v)
+            end
+            local p = v.Parent
+            if p and p:IsA("Model") and GetTrapInfo(p) then
+                TrackTrap(p)
+                return
+            end
+            if GetTrapInfo(v) then
+                TrackTrap(v)
+                return
+            end
+            local nameLower = v.Name:lower()
+            if nameLower:find("extraction") or nameLower == "exit" or nameLower:find("evac") then
+                TrackExtraction(v)
             end
         end
     end
+
+    local function ScanTraps()
+        local function ScanFolder(folder: Instance?)
+            if not folder then return end
+            for _, desc in ipairs(folder:GetDescendants()) do
+                if desc:IsA("Model") and GetTrapInfo(desc) then
+                    TrackTrap(desc)
+                end
+            end
+            TrackConnection(folder.DescendantAdded:Connect(function(desc)
+                if desc:IsA("Model") and GetTrapInfo(desc) then
+                    TrackTrap(desc)
+                end
+            end))
+        end
+
+        ScanFolder(Workspace:FindFirstChild("AiZones"))
+        local noColl = Workspace:FindFirstChild("NoCollision")
+        if noColl then
+            ScanFolder(noColl:FindFirstChild("AiZones"))
+        end
+    end
+    ScanTraps()
+
+    local function ScanExits()
+        local noColl = Workspace:FindFirstChild("NoCollision")
+        local exitFolder = noColl and noColl:FindFirstChild("ExitLocations")
+        if exitFolder then
+            for _, exit in ipairs(exitFolder:GetChildren()) do
+                TrackExtraction(exit)
+            end
+            TrackConnection(exitFolder.ChildAdded:Connect(TrackExtraction))
+        end
+        local altExitFolder = Workspace:FindFirstChild("ExitLocations")
+        if altExitFolder and altExitFolder ~= exitFolder then
+            for _, exit in ipairs(altExitFolder:GetChildren()) do
+                TrackExtraction(exit)
+            end
+            TrackConnection(altExitFolder.ChildAdded:Connect(TrackExtraction))
+        end
+        for _, c in ipairs(Workspace:GetChildren()) do
+            local nl = c.Name:lower()
+            if (nl:find("extraction") or nl == "exit" or nl:find("evac")) and (c:IsA("BasePart") or c:IsA("Model")) then
+                TrackExtraction(c)
+            end
+        end
+    end
+    ScanExits()
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
         ScanObject(obj)
     end
-    TrackConnection(Workspace.DescendantAdded:Connect(ScanObject))
-
-    local function HookDroppedFolder(folder: Instance)
-        if not folder then return end
-        for _, item in ipairs(folder:GetDescendants()) do
-            if item:IsA("Model") or item:IsA("BasePart") then
-                if IsLikelyDroppedItem(item) then
-                    TrackDroppedItem(item)
-                end
-            end
-        end
-        TrackConnection(folder.DescendantAdded:Connect(function(item)
-            if item:IsA("Model") or item:IsA("BasePart") then
-                TrackDroppedItem(item)
-            else
-                local parent = item.Parent
-                if parent and (parent:IsA("Model") or parent:IsA("BasePart")) then
-                    TrackDroppedItem(parent)
-                end
-            end
-        end))
-    end
+    TrackConnection(Workspace.DescendantAdded:Connect(function(desc)
+        ScanObject(desc)
+    end))
 
     local droppedFolder = Workspace:FindFirstChild("DroppedItems")
     if droppedFolder then
-        HookDroppedFolder(droppedFolder)
-    end
-
-    TrackConnection(Workspace.DescendantAdded:Connect(function(v)
-        if v.Name:lower():find("dropped") and (v:IsA("Folder") or v:IsA("Model")) then
-            HookDroppedFolder(v)
+        for _, item in ipairs(droppedFolder:GetChildren()) do
+            TrackDroppedItem(item)
         end
-    end))
+        TrackConnection(droppedFolder.ChildAdded:Connect(TrackDroppedItem))
+    end
 end)
 
 TrackConnection(UserInputService.InputBegan:Connect(function(input, gpe)
@@ -2046,6 +1932,200 @@ local function PlayHitSound()
     Debris:AddItem(s, 2)
 end
 
+local function CreateBulletTracer(origin: Vector3, endPos: Vector3)
+    if not Config.BulletTracers then return end
+    task.spawn(function()
+        local dist = (origin - endPos).Magnitude
+        local travelTime = 0.05
+        local lifetime = 0.35
+
+        local core = Instance.new("Part")
+        core.Name = "IdenticalTracerCore"
+        core.Anchored = true
+        core.CanCollide = false
+        core.CanQuery = false
+        core.CastShadow = false
+        core.Material = Enum.Material.Neon
+        core.Color = Color3.new(1, 1, 1)
+        core.Size = Vector3.new(0.05, 0.05, 0)
+        core.CFrame = CFrame.new(origin, endPos)
+        core.Parent = Workspace
+        TrackInstance(core)
+
+        local glow = core:Clone()
+        glow.Name = "IdenticalTracerGlow"
+        glow.Color = Config.TracerColor or IdenticalTheme.Accent
+        glow.Size = Vector3.new(0.18, 0.18, 0)
+        glow.Transparency = 0.4
+        glow.Parent = Workspace
+        TrackInstance(glow)
+
+        local ts = TweenService:Create(core, TweenInfo.new(travelTime, Enum.EasingStyle.Linear), {
+            Size = Vector3.new(0.05, 0.05, dist),
+            CFrame = CFrame.new(origin:Lerp(endPos, 0.5), endPos)
+        })
+        local tsGlow = TweenService:Create(glow, TweenInfo.new(travelTime, Enum.EasingStyle.Linear), {
+            Size = Vector3.new(0.18, 0.18, dist),
+            CFrame = CFrame.new(origin:Lerp(endPos, 0.5), endPos)
+        })
+        ts:Play()
+        tsGlow:Play()
+
+        task.delay(travelTime, function()
+            local fadeOut = TweenService:Create(core, TweenInfo.new(lifetime), {Transparency = 1})
+            local fadeOutGlow = TweenService:Create(glow, TweenInfo.new(lifetime), {Transparency = 1})
+            fadeOut:Play()
+            fadeOutGlow:Play()
+            task.delay(lifetime, function()
+                pcall(function() core:Destroy() end)
+                pcall(function() glow:Destroy() end)
+            end)
+        end)
+    end)
+end
+
+local function CreateHitMarker(hitPart: BasePart?, pos: Vector3)
+    if not Config.HitMarkers or not hitPart or not Drawing then return end
+    task.spawn(function()
+        local line1 = Drawing.new("Line")
+        local line2 = Drawing.new("Line")
+        line1.Thickness = 1.5
+        line1.Color = Config.HitmarkerColor or Color3.fromRGB(255, 255, 255)
+        line2.Thickness = 1.5
+        line2.Color = Config.HitmarkerColor or Color3.fromRGB(255, 255, 255)
+        TrackDrawing(line1)
+        TrackDrawing(line2)
+
+        local start = tick()
+        local lifetime = 0.35
+        local size = 6
+        local offset = hitPart.CFrame:PointToObjectSpace(pos)
+
+        while isRunning and (tick() - start < lifetime) do
+            if not hitPart or not hitPart.Parent then break end
+            local currentPos = hitPart.CFrame:PointToWorldSpace(offset)
+            local sPos, onScreen = Camera:WorldToViewportPoint(currentPos)
+            local alpha = 1 - ((tick() - start) / lifetime)
+
+            if onScreen then
+                line1.Visible = true
+                line2.Visible = true
+                line1.Transparency = alpha
+                line2.Transparency = alpha
+
+                line1.From = Vector2.new(sPos.X - size, sPos.Y - size)
+                line1.To   = Vector2.new(sPos.X + size, sPos.Y + size)
+
+                line2.From = Vector2.new(sPos.X + size, sPos.Y - size)
+                line2.To   = Vector2.new(sPos.X - size, sPos.Y + size)
+            else
+                line1.Visible = false
+                line2.Visible = false
+            end
+            RunService.RenderStepped:Wait()
+        end
+
+        pcall(function() line1:Remove() end)
+        pcall(function() line2:Remove() end)
+    end)
+end
+
+local hitLogsList: { any } = {}
+local function CreateHitLog(partName: string, targetName: string)
+    if not Config.HitLogsEnabled or not Drawing then return end
+    task.spawn(function()
+        local text = Drawing.new("Text")
+        text.Size = Config.HitLogsSize or 13
+        text.Font = 2
+        text.Center = true
+        text.Outline = true
+        text.Color = Config.HitLogsColor or IdenticalTheme.Accent
+        text.Text = string.format("[%s] hit %s in %s", os.date("%H:%M:%S"), targetName:lower(), partName:lower())
+        text.Visible = true
+        TrackDrawing(text)
+
+        table.insert(hitLogsList, text)
+        local center = Camera.ViewportSize * 0.5
+        for i, logItem in ipairs(hitLogsList) do
+            logItem.Position = Vector2.new(center.X, center.Y + 120 + (i * 16))
+        end
+
+        task.delay(Config.HitLogsLifetime or 4, function()
+            local idx = table.find(hitLogsList, text)
+            if idx then table.remove(hitLogsList, idx) end
+            pcall(function() text:Remove() end)
+        end)
+    end)
+end
+
+pcall(function()
+    local RS = game:GetService("ReplicatedStorage")
+    local fpsMods = RS:FindFirstChild("Modules") and RS.Modules:FindFirstChild("FPS")
+    local bulletMod = fpsMods and fpsMods:FindFirstChild("Bullet")
+    if not bulletMod then return end
+
+    local bulletTable = require(bulletMod)
+    if not bulletTable or type(bulletTable.CreateBullet) ~= "function" then return end
+
+    local origCreateBullet = bulletTable.CreateBullet
+    local oldCreateBullet = nil
+
+    local function myCreateBullet(...)
+        local args = { ... }
+        if isRunning then
+            pcall(function()
+                local muzzle = args[5]
+                local isCaller = checkcaller and checkcaller()
+
+                if not isCaller and muzzle and typeof(muzzle) == "Instance" and muzzle:IsA("BasePart") then
+                    local currentMuzzleCF = muzzle.CFrame
+                    task.spawn(function()
+                        local origin = currentMuzzleCF.Position
+                        local dir = currentMuzzleCF.LookVector * 1500
+                        local rayParams = RaycastParams.new()
+                        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+                        rayParams.FilterDescendantsInstances = { LocalPlayer.Character, Camera }
+
+                        local res = Workspace:Raycast(origin, dir, rayParams)
+                        local endPos = if res then res.Position else (origin + dir)
+
+                        if Config.BulletTracers then
+                            CreateBulletTracer(origin, endPos)
+                        end
+
+                        if res and res.Instance then
+                            local hitModel = res.Instance:FindFirstAncestorOfClass("Model")
+                            local hitPlr = hitModel and Players:GetPlayerFromCharacter(hitModel)
+                            local isNpc = hitModel and not hitPlr and hitModel:FindFirstChildOfClass("Humanoid")
+                            if (hitPlr and hitPlr ~= LocalPlayer) or isNpc then
+                                PlayHitSound()
+                                CreateHitMarker(res.Instance, res.Position)
+                                CreateHitLog(res.Instance.Name, hitPlr and hitPlr.Name or (hitModel and hitModel.Name or "Unknown"))
+                            end
+                        end
+                    end)
+                end
+            end)
+        end
+
+        if oldCreateBullet then
+            return oldCreateBullet(...)
+        end
+        return origCreateBullet(...)
+    end
+
+    if hookfunction and newcclosure then
+        oldCreateBullet = hookfunction(origCreateBullet, newcclosure(function(...)
+            return myCreateBullet(...)
+        end))
+        hookedFunctions[origCreateBullet] = oldCreateBullet
+    else
+        bulletTable.CreateBullet = myCreateBullet
+        hookedFunctions[bulletTable] = function()
+            bulletTable.CreateBullet = origCreateBullet
+        end
+    end
+end)
 TargetInfoGui = Instance.new("ScreenGui")
 TargetInfoGui.Name = "Identical_TargetInfo"
 TargetInfoGui.ResetOnSpawn = false
@@ -2168,7 +2248,6 @@ local lastTargetItems = ""
 local targetLastPos: Vector3? = nil
 local targetLastTick: number = 0
 local targetCalculatedSpeed: number = 0
-local targetHUDThrottle = 0
 
 TrackConnection(RunService.Heartbeat:Connect(function()
     if not isRunning or not (Config.TargetHUDEnabled or Config.InventoryViewerEnabled) then
@@ -2177,9 +2256,6 @@ TrackConnection(RunService.Heartbeat:Connect(function()
         targetLastPos = nil
         return
     end
-
-    targetHUDThrottle += 1
-    if targetHUDThrottle % 3 ~= 0 then return end
 
     local bestTarget, _ = GetClosestPlayerToMouse(500)
 
@@ -2283,13 +2359,9 @@ end))
 local playerLastPositions: { [Player]: { Pos: Vector3, Time: number } } = {}
 local playerHackerTimestamps: { [Player]: number } = {}
 local playerAlertDebounce: { [Player]: number } = {}
-local hackerThrottle = 0
 
 TrackConnection(RunService.Heartbeat:Connect(function()
     if not isRunning or not Config.HackerDetector then return end
-
-    hackerThrottle += 1
-    if hackerThrottle % 15 ~= 0 then return end
 
     local now = tick()
     local threshold = tonumber(Config.HackerSpeedThreshold) or 35
@@ -2359,29 +2431,6 @@ mainFrame.BackgroundColor3 = IdenticalTheme.WindowBackground
 mainFrame.BorderSizePixel = 0
 mainFrame.Parent = RootGui
 TrackInstance(mainFrame)
-
--- Responsive scaling: keeps the existing desktop layout but makes the same UI
--- usable on narrow Android screens without rewriting every component.
-local mainUIScale = Instance.new("UIScale")
-mainUIScale.Name = "ResponsiveScale"
-mainUIScale.Parent = mainFrame
-TrackInstance(mainUIScale)
-
-local function UpdateResponsiveScale()
-    local viewport = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-    local scale = math.min(viewport.X / 700, viewport.Y / 520)
-    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
-        scale = math.clamp(scale, 0.58, 0.90)
-    else
-        scale = math.clamp(scale, 0.72, 1.0)
-    end
-    mainUIScale.Scale = scale
-end
-
-UpdateResponsiveScale()
-if Workspace.CurrentCamera then
-    TrackConnection(Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateResponsiveScale))
-end
 
 local mainCorner = Instance.new("UICorner", mainFrame)
 mainCorner.CornerRadius = UDim.new(0, 4)
@@ -2742,7 +2791,6 @@ local function CreateSection(parentCol: ScrollingFrame, title: string): Frame
 
     return content
 end
-
 local function AddToggle(parentSection: Frame, labelText: string, configKey: string, callback: ((boolean) -> ())?): (boolean) -> ()
     local row = Instance.new("Frame", parentSection)
     row.Size = UDim2.new(1, 0, 0, 20)
@@ -2809,294 +2857,9 @@ local function AddToggle(parentSection: Frame, labelText: string, configKey: str
     return SetState
 end
 
-local function AddTextBox(parentSection: Frame, labelText: string, configKey: string, placeholder: string?, callback: ((string) -> ())?)
-    local container = Instance.new("Frame", parentSection)
-    container.Size = UDim2.new(1, 0, 0, 42)
-    container.BackgroundTransparency = 1
-
-    local lbl = Instance.new("TextLabel", container)
-    lbl.Size = UDim2.new(1, 0, 0, 16)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = IdenticalFont
-    lbl.Text = labelText
-    lbl.TextColor3 = Color3.fromRGB(215, 222, 235)
-    lbl.TextSize = 12
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-
-    local boxBg = Instance.new("Frame", container)
-    boxBg.Size = UDim2.new(1, 0, 0, 22)
-    boxBg.Position = UDim2.new(0, 0, 0, 18)
-    boxBg.BackgroundColor3 = Color3.fromRGB(24, 30, 40)
-    boxBg.BorderSizePixel = 0
-
-    local boxCorner = Instance.new("UICorner", boxBg)
-    boxCorner.CornerRadius = UDim.new(0, 3)
-
-    local bStroke = Instance.new("UIStroke", boxBg)
-    bStroke.Color = Color3.fromRGB(48, 58, 76)
-    bStroke.Thickness = 1
-
-    local tBox = Instance.new("TextBox", boxBg)
-    tBox.Size = UDim2.new(1, -12, 1, 0)
-    tBox.Position = UDim2.new(0, 6, 0, 0)
-    tBox.BackgroundTransparency = 1
-    tBox.Font = IdenticalFont
-    tBox.Text = Config[configKey] or ""
-    tBox.PlaceholderText = placeholder or ""
-    tBox.TextColor3 = Color3.fromRGB(240, 245, 255)
-    tBox.PlaceholderColor3 = Color3.fromRGB(120, 130, 145)
-    tBox.TextSize = 12
-    tBox.TextXAlignment = Enum.TextXAlignment.Left
-    tBox.ClearTextOnFocus = false
-
-    tBox.FocusLost:Connect(function()
-        local txt = tBox.Text
-        Config[configKey] = txt
-        if callback then pcall(callback, txt) end
-        TriggerAutoSave()
-    end)
-
-    uiUpdateCallbacks[configKey] = function(newVal)
-        tBox.Text = tostring(newVal)
-    end
-end
-
-local function AddKeywordManagerPanel(parentSection: Frame, buttonText: string)
-    local row = Instance.new("Frame", parentSection)
-    row.Size = UDim2.new(1, 0, 0, 24)
-    row.BackgroundTransparency = 1
-
-    local btn = Instance.new("TextButton", row)
-    btn.Size = UDim2.new(1, 0, 1, 0)
-    btn.BackgroundColor3 = Color3.fromRGB(30, 36, 48)
-    btn.BorderSizePixel = 0
-    btn.Font = IdenticalBoldFont
-    btn.Text = buttonText
-    btn.TextColor3 = Color3.fromRGB(245, 248, 255)
-    btn.TextSize = 12
-
-    local btnCorner = Instance.new("UICorner", btn)
-    btnCorner.CornerRadius = UDim.new(0, 3)
-
-    local bStroke = Instance.new("UIStroke", btn)
-    bStroke.Color = Color3.fromRGB(56, 68, 88)
-    bStroke.Thickness = 1
-
-    local panel = Instance.new("Frame", MainScreenGui)
-    panel.Name = "Identical_KeywordManagerPanel"
-    panel.Size = UDim2.new(0, 260, 0, 300)
-    panel.Position = UDim2.new(0.5, -130, 0.5, -150)
-    panel.BackgroundColor3 = IdenticalTheme.Card
-    panel.BorderSizePixel = 0
-    panel.Visible = false
-    panel.ZIndex = 100
-    TrackInstance(panel)
-
-    local pCorner = Instance.new("UICorner", panel)
-    pCorner.CornerRadius = UDim.new(0, 4)
-
-    local pGrad = Instance.new("UIGradient", panel)
-    pGrad.Rotation = 90
-    pGrad.Color = ColorSequence.new(IdenticalTheme.CardTop, IdenticalTheme.CardBottom)
-
-    local pStroke = Instance.new("UIStroke", panel)
-    pStroke.Color = IdenticalTheme.CardBorder
-    pStroke.Thickness = 1
-
-    local pTitleBar = Instance.new("Frame", panel)
-    pTitleBar.Size = UDim2.new(1, 0, 0, 26)
-    pTitleBar.BackgroundColor3 = Color3.fromRGB(20, 23, 29)
-    pTitleBar.BorderSizePixel = 0
-    pTitleBar.ZIndex = 101
-
-    local pTitleCorner = Instance.new("UICorner", pTitleBar)
-    pTitleCorner.CornerRadius = UDim.new(0, 4)
-
-    local pTitleLbl = Instance.new("TextLabel", pTitleBar)
-    pTitleLbl.Size = UDim2.new(1, -30, 1, 0)
-    pTitleLbl.Position = UDim2.new(0, 8, 0, 0)
-    pTitleLbl.BackgroundTransparency = 1
-    pTitleLbl.Font = IdenticalBoldFont
-    pTitleLbl.Text = "Manage ESP Keywords"
-    pTitleLbl.TextColor3 = Color3.fromRGB(245, 248, 255)
-    pTitleLbl.TextSize = 12
-    pTitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-    pTitleLbl.ZIndex = 102
-
-    local pCloseBtn = Instance.new("TextButton", pTitleBar)
-    pCloseBtn.Size = UDim2.new(0, 18, 0, 18)
-    pCloseBtn.Position = UDim2.new(1, -22, 0.5, -9)
-    pCloseBtn.BackgroundColor3 = Color3.fromRGB(22, 24, 29)
-    pCloseBtn.BorderSizePixel = 0
-    pCloseBtn.Font = IdenticalBoldFont
-    pCloseBtn.Text = "x"
-    pCloseBtn.TextColor3 = Color3.fromRGB(190, 195, 205)
-    pCloseBtn.TextSize = 11
-    pCloseBtn.ZIndex = 102
-
-    local pCloseStroke = Instance.new("UIStroke", pCloseBtn)
-    pCloseStroke.Color = Color3.fromRGB(42, 48, 60)
-    pCloseStroke.Thickness = 1
-
-    pCloseBtn.MouseButton1Click:Connect(function()
-        panel.Visible = false
-    end)
-
-    local addContainer = Instance.new("Frame", panel)
-    addContainer.Size = UDim2.new(1, -16, 0, 50)
-    addContainer.Position = UDim2.new(0, 8, 0, 34)
-    addContainer.BackgroundTransparency = 1
-    addContainer.ZIndex = 101
-
-    local addInputBg = Instance.new("Frame", addContainer)
-    addInputBg.Size = UDim2.new(1, -60, 0, 24)
-    addInputBg.Position = UDim2.new(0, 0, 0, 0)
-    addInputBg.BackgroundColor3 = Color3.fromRGB(24, 30, 40)
-    addInputBg.BorderSizePixel = 0
-    addInputBg.ZIndex = 101
-
-    local aiCorner = Instance.new("UICorner", addInputBg)
-    aiCorner.CornerRadius = UDim.new(0, 3)
-    local aiStroke = Instance.new("UIStroke", addInputBg)
-    aiStroke.Color = Color3.fromRGB(48, 58, 76)
-    aiStroke.Thickness = 1
-
-    local addTextBox = Instance.new("TextBox", addInputBg)
-    addTextBox.Size = UDim2.new(1, -10, 1, 0)
-    addTextBox.Position = UDim2.new(0, 5, 0, 0)
-    addTextBox.BackgroundTransparency = 1
-    addTextBox.Font = IdenticalFont
-    addTextBox.PlaceholderText = "New keyword..."
-    addTextBox.Text = ""
-    addTextBox.TextColor3 = Color3.fromRGB(240, 245, 255)
-    addTextBox.PlaceholderColor3 = Color3.fromRGB(120, 130, 145)
-    addTextBox.TextSize = 12
-    addTextBox.TextXAlignment = Enum.TextXAlignment.Left
-    addTextBox.ZIndex = 102
-    addTextBox.ClearTextOnFocus = false
-
-    local addBtn = Instance.new("TextButton", addContainer)
-    addBtn.Size = UDim2.new(0, 52, 0, 24)
-    addBtn.Position = UDim2.new(1, -52, 0, 0)
-    addBtn.BackgroundColor3 = IdenticalTheme.Accent
-    addBtn.BorderSizePixel = 0
-    addBtn.Font = IdenticalBoldFont
-    addBtn.Text = "Add"
-    addBtn.TextColor3 = Color3.fromRGB(15, 25, 40)
-    addBtn.TextSize = 12
-    addBtn.ZIndex = 101
-
-    local abCorner = Instance.new("UICorner", addBtn)
-    abCorner.CornerRadius = UDim.new(0, 3)
-
-    local scrollList = Instance.new("ScrollingFrame", panel)
-    scrollList.Size = UDim2.new(1, -16, 1, -96)
-    scrollList.Position = UDim2.new(0, 8, 0, 88)
-    scrollList.BackgroundTransparency = 1
-    scrollList.BorderSizePixel = 0
-    scrollList.ScrollBarThickness = 3
-    scrollList.ScrollBarImageColor3 = IdenticalTheme.Accent
-    scrollList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    scrollList.CanvasSize = UDim2.new(0, 0, 0, 0)
-    scrollList.ZIndex = 101
-
-    local listLayout = Instance.new("UIListLayout", scrollList)
-    listLayout.Padding = UDim.new(0, 4)
-    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-
-    local function RefreshList()
-        for _, child in ipairs(scrollList:GetChildren()) do
-            if child:IsA("Frame") then child:Destroy() end
-        end
-
-        if not Config.ContainerKeywords then
-            Config.ContainerKeywords = {}
-        end
-
-        for index, kw in ipairs(Config.ContainerKeywords) do
-            local itemRow = Instance.new("Frame", scrollList)
-            itemRow.Size = UDim2.new(1, 0, 0, 24)
-            itemRow.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
-            itemRow.BorderSizePixel = 0
-            itemRow.ZIndex = 101
-
-            local irCorner = Instance.new("UICorner", itemRow)
-            irCorner.CornerRadius = UDim.new(0, 3)
-            local irStroke = Instance.new("UIStroke", itemRow)
-            irStroke.Color = Color3.fromRGB(40, 48, 62)
-            irStroke.Thickness = 1
-
-            local itemLbl = Instance.new("TextLabel", itemRow)
-            itemLbl.Size = UDim2.new(1, -30, 1, 0)
-            itemLbl.Position = UDim2.new(0, 8, 0, 0)
-            itemLbl.BackgroundTransparency = 1
-            itemLbl.Font = IdenticalFont
-            itemLbl.Text = kw
-            itemLbl.TextColor3 = Color3.fromRGB(230, 235, 245)
-            itemLbl.TextSize = 12
-            itemLbl.TextXAlignment = Enum.TextXAlignment.Left
-            itemLbl.ZIndex = 102
-
-            local delBtn = Instance.new("TextButton", itemRow)
-            delBtn.Size = UDim2.new(0, 18, 0, 18)
-            delBtn.Position = UDim2.new(1, -21, 0.5, -9)
-            delBtn.BackgroundColor3 = Color3.fromRGB(180, 45, 45)
-            delBtn.BorderSizePixel = 0
-            delBtn.Font = IdenticalBoldFont
-            delBtn.Text = "X"
-            delBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            delBtn.TextSize = 10
-            delBtn.ZIndex = 102
-
-            local delCorner = Instance.new("UICorner", delBtn)
-            delCorner.CornerRadius = UDim.new(0, 2)
-
-            delBtn.MouseButton1Click:Connect(function()
-                table.remove(Config.ContainerKeywords, index)
-                RefreshList()
-                TriggerAutoSave()
-                Notify("Keywords", "Keyword removed!", Color3.fromRGB(255, 100, 100), 2)
-            end)
-        end
-    end
-
-    addBtn.MouseButton1Click:Connect(function()
-        local text = addTextBox.Text:match("^%s*(.-)%s*$")
-        if text and text ~= "" then
-            if not table.find(Config.ContainerKeywords, text) then
-                table.insert(Config.ContainerKeywords, text)
-                addTextBox.Text = ""
-                RefreshList()
-                TriggerAutoSave()
-                Notify("Keywords", "Keyword added: " .. text, IdenticalTheme.Accent, 2)
-            else
-                Notify("Keywords", "Keyword already exists!", Color3.fromRGB(255, 180, 60), 2)
-            end
-        end
-    end)
-
-    btn.MouseButton1Click:Connect(function()
-        panel.Visible = not panel.Visible
-        if panel.Visible then
-            RefreshList()
-        end
-    end)
-
-    btn.MouseEnter:Connect(function()
-        bStroke.Color = IdenticalTheme.Accent
-        btn.BackgroundColor3 = Color3.fromRGB(40, 48, 64)
-        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    end)
-    btn.MouseLeave:Connect(function()
-        bStroke.Color = Color3.fromRGB(56, 68, 88)
-        btn.BackgroundColor3 = Color3.fromRGB(30, 36, 48)
-        btn.TextColor3 = Color3.fromRGB(245, 248, 255)
-    end)
-end
-
 local function AddSlider(parentSection: Frame, labelText: string, configKey: string, min: number, max: number, suffix: string?, decimals: number?, callback: ((number) -> ())?)
-    suffix = suffix or ""
-    decimals = decimals or 0
+    local suf: string = suffix or ""
+    local dec: number = decimals or 0
     local default = Config[configKey] or min
 
     local container = Instance.new("Frame", parentSection)
@@ -3121,7 +2884,7 @@ local function AddSlider(parentSection: Frame, labelText: string, configKey: str
     valLbl.Position = UDim2.new(1, -85, 0, 0)
     valLbl.BackgroundTransparency = 1
     valLbl.Font = IdenticalBoldFont
-    valLbl.Text = tostring(default) .. suffix
+    valLbl.Text = tostring(default) .. suf
     valLbl.TextColor3 = IdenticalTheme.Accent
     valLbl.TextSize = 12
     valLbl.TextXAlignment = Enum.TextXAlignment.Right
@@ -3165,11 +2928,11 @@ local function AddSlider(parentSection: Frame, labelText: string, configKey: str
     local function Update(inputX: number)
         local ratio = math.clamp((inputX - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
         local rawVal = min + (ratio * (max - min))
-        local mult = 10 ^ decimals
+        local mult = 10 ^ dec
         local finalVal = math.round(rawVal * mult) / mult
         Config[configKey] = finalVal
         fill.Size = UDim2.new(ratio, 0, 1, 0)
-        valLbl.Text = tostring(finalVal) .. suffix
+        valLbl.Text = tostring(finalVal) .. suf
         if callback then pcall(callback, finalVal) end
         TriggerAutoSave()
     end
@@ -3192,7 +2955,7 @@ local function AddSlider(parentSection: Frame, labelText: string, configKey: str
     uiUpdateCallbacks[configKey] = function(newVal)
         local ratio = math.clamp((newVal - min) / (max - min), 0, 1)
         fill.Size = UDim2.new(ratio, 0, 1, 0)
-        valLbl.Text = tostring(newVal) .. suffix
+        valLbl.Text = tostring(newVal) .. suf
     end
 end
 
@@ -3450,9 +3213,6 @@ local function SetMouseFree(free: boolean)
     end)
 end
 
-local mobileMenuButton: TextButton? = nil
-local mobileAimButton: TextButton? = nil
-
 local isMouseBound = false
 local function FreeMouseStep()
     UserInputService.MouseBehavior = Enum.MouseBehavior.Default
@@ -3496,98 +3256,6 @@ ToggleUI = function(state: boolean?)
         SetMouseFree(false)
     end
     UpdateMouseBinding()
-
-    -- Mobile controls stay available when the main menu is closed.
-    if mobileMenuButton then
-        mobileMenuButton.Text = isUIVisible and "HIDE" or "MENU"
-    end
-end
-
--- =========================
--- ANDROID / TOUCH CONTROLS
--- =========================
-if UserInputService.TouchEnabled then
-    local touchGui = Instance.new("ScreenGui")
-    touchGui.Name = "Identical_MobileControls"
-    touchGui.ResetOnSpawn = false
-    touchGui.IgnoreGuiInset = true
-    touchGui.DisplayOrder = 10000
-    touchGui.Parent = RootGui
-    TrackInstance(touchGui)
-
-    mobileMenuButton = Instance.new("TextButton")
-    mobileMenuButton.Name = "MobileMenu"
-    mobileMenuButton.AnchorPoint = Vector2.new(1, 0)
-    mobileMenuButton.Position = UDim2.new(1, -14, 0, 14)
-    mobileMenuButton.Size = UDim2.fromOffset(64, 34)
-    mobileMenuButton.BackgroundColor3 = IdenticalTheme.Card
-    mobileMenuButton.BorderSizePixel = 0
-    mobileMenuButton.Text = "HIDE"
-    mobileMenuButton.TextColor3 = IdenticalTheme.Text
-    mobileMenuButton.TextSize = 11
-    mobileMenuButton.Font = IdenticalBoldFont
-    mobileMenuButton.AutoButtonColor = false
-    mobileMenuButton.Parent = touchGui
-
-    local menuCorner = Instance.new("UICorner", mobileMenuButton)
-    menuCorner.CornerRadius = UDim.new(0, 5)
-    local menuStroke = Instance.new("UIStroke", mobileMenuButton)
-    menuStroke.Color = IdenticalTheme.Accent
-    menuStroke.Thickness = 1
-
-    mobileMenuButton.Activated:Connect(function()
-        if ToggleUI then ToggleUI() end
-    end)
-
-    -- Hold this button to use the existing camera-aim routine on touch devices.
-    mobileAimButton = Instance.new("TextButton")
-    mobileAimButton.Name = "MobileAim"
-    mobileAimButton.AnchorPoint = Vector2.new(1, 1)
-    mobileAimButton.Position = UDim2.new(1, -14, 1, -24)
-    mobileAimButton.Size = UDim2.fromOffset(70, 48)
-    mobileAimButton.BackgroundColor3 = IdenticalTheme.Card
-    mobileAimButton.BorderSizePixel = 0
-    mobileAimButton.Text = "AIM"
-    mobileAimButton.TextColor3 = IdenticalTheme.Text
-    mobileAimButton.TextSize = 12
-    mobileAimButton.Font = IdenticalBoldFont
-    mobileAimButton.AutoButtonColor = false
-    mobileAimButton.Visible = true
-    mobileAimButton.Parent = touchGui
-
-    local aimCorner = Instance.new("UICorner", mobileAimButton)
-    aimCorner.CornerRadius = UDim.new(0, 6)
-    local aimStroke = Instance.new("UIStroke", mobileAimButton)
-    aimStroke.Color = IdenticalTheme.Accent
-    aimStroke.Thickness = 1
-
-    mobileAimButton.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-            or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            if Config.AimbotEnabled then
-                isAimbotActive = true
-                mobileAimButton.BackgroundColor3 = IdenticalTheme.AccentDark
-            end
-        end
-    end)
-
-    mobileAimButton.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-            or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            isAimbotActive = false
-            mobileAimButton.BackgroundColor3 = IdenticalTheme.Card
-        end
-    end)
-
-    -- Hide touch AIM while the menu is open so it never blocks UI controls.
-    TrackConnection(RunService.RenderStepped:Connect(function()
-        if mobileAimButton then
-            mobileAimButton.Visible = not isUIVisible and Config.AimbotEnabled
-        end
-        if mobileMenuButton then
-            mobileMenuButton.Text = isUIVisible and "HIDE" or "MENU"
-        end
-    end))
 end
 
 TrackConnection(UserInputService.InputBegan:Connect(function(input, gpe)
@@ -3618,26 +3286,38 @@ do
     AddToggle(aimBox, "Target NPCs / AI", "TargetNPCs", function(v)
         Config.TargetNPCs = v
     end)
+    AddToggle(aimBox, "Wall Check (Visible Only)", "AimbotWallCheck", function(v)
+        Config.AimbotWallCheck = v
+    end)
+    AddToggle(aimBox, "Lead Target Prediction", "AimbotPrediction", function(v)
+        Config.AimbotPrediction = v
+    end)
+    AddSlider(aimBox, "Projectile Velocity", "BulletVelocity", 100, 3000, " studs/s", 0, function(v)
+        Config.BulletVelocity = v
+    end)
+    AddToggle(aimBox, "Bullet Drop Aim Assist", "BulletDropAimAssist", function(v)
+        Config.BulletDropAimAssist = v
+    end)
+    AddSlider(aimBox, "Drop Gravity Scale", "BulletDropGravityScale", 0, 3, "x", 2, function(v)
+        Config.BulletDropGravityScale = v
+    end)
+    AddToggle(aimBox, "Bullet Fall Helper", "BulletFallHelper", function(v)
+        Config.BulletFallHelper = v
+    end)
 
     local gunBox = CreateSection(col2, "Gun Mods")
     AddToggle(gunBox, "No Recoil", "NoRecoil", function(v)
         Config.NoRecoil = v
+        ApplyAmmoMods()
         Notify("Gun Mods", if v then "No Recoil enabled" else "No Recoil restored")
     end)
-    AddToggle(gunBox, "No Bullet Drop (Anti-Drop)", "NoDrop", function(v)
+    AddToggle(gunBox, "No Bullet Drop", "NoDrop", function(v)
         Config.NoDrop = v
-        Notify("Gun Mods", if v then "No Bullet Drop enabled" else "No Bullet Drop disabled")
-    end)
-    AddToggle(gunBox, "Bullet Drop Aim Assist", "BulletDropAimAssist", function(v)
-        Config.BulletDropAimAssist = v
-        Notify("Gun Mods", if v then "Bullet Drop Aim Assist enabled" else "Bullet Drop Aim Assist disabled")
-    end)
-    AddToggle(gunBox, "Bullet Fall Helper (Preview)", "BulletFallHelper", function(v)
-        Config.BulletFallHelper = v
-        Notify("Gun Mods", if v then "Bullet Fall Helper enabled" else "Bullet Fall Helper disabled")
+        ApplyAmmoMods()
     end)
     AddToggle(gunBox, "No Drag", "NoDrag", function(v)
         Config.NoDrag = v
+        ApplyAmmoMods()
     end)
     AddToggle(gunBox, "Instant Aim / Zoom", "InstantAim", function(v)
         Config.InstantAim = v
@@ -3666,58 +3346,50 @@ do
     AddToggle(espBox, "Distance", "ESPDistance", function(v)
         Config.ESPDistance = v
     end)
-    AddSlider(espBox, "ESP Offset X (Kiri/Kanan)", "ESPOffsetX", -200, 200, "px", 0, function(v)
-        Config.ESPOffsetX = v
-    end)
-    AddSlider(espBox, "ESP Offset Y (Atas/Bawah)", "ESPOffsetY", -200, 200, "px", 0, function(v)
-        Config.ESPOffsetY = v
-    end)
     AddToggle(espBox, "Container ESP", "ContainerESP", function(v)
         Config.ContainerESP = v
     end)
-    AddToggle(espBox, "Container Filter", "ContainerFilterEnabled", function(v)
-        Config.ContainerFilterEnabled = v
-    end)
-    AddTextBox(espBox, "Filter Keyword (Manual)", "ContainerFilterText", "e.g. Key, Wrench")
-    AddKeywordManagerPanel(espBox, "Manage Keyword List ➔")
-    AddSlider(espBox, "Container Render Distance", "ContainerMaxDist", 100, 20000, " studs", 0, function(v)
+    AddSlider(espBox, "Container Render Distance", "ContainerMaxDist", 100, 2000, " studs", 0, function(v)
         Config.ContainerMaxDist = v
     end)
-    AddSlider(espBox, "Player ESP Max Distance", "PlayerMaxDist", 100, 50000, " studs", 0, function(v)
+    AddSlider(espBox, "Player ESP Max Distance", "PlayerMaxDist", 100, 5000, " studs", 0, function(v)
         Config.PlayerMaxDist = v
     end)
     AddToggle(espBox, "NPC ESP", "NPC_ESP", function(v)
         Config.NPC_ESP = v
     end)
-    AddSlider(espBox, "NPC Render Distance", "NPCMaxDist", 100, 30000, " studs", 0, function(v)
+    AddSlider(espBox, "NPC Render Distance", "NPCMaxDist", 100, 3000, " studs", 0, function(v)
         Config.NPCMaxDist = v
     end)
     AddToggle(espBox, "Vehicle ESP", "Vehicle_ESP", function(v)
         Config.Vehicle_ESP = v
     end)
-    AddSlider(espBox, "Vehicle Render Distance", "VehicleMaxDist", 100, 50000, " studs", 0, function(v)
+    AddSlider(espBox, "Vehicle Render Distance", "VehicleMaxDist", 100, 5000, " studs", 0, function(v)
         Config.VehicleMaxDist = v
     end)
     AddToggle(espBox, "Dropped Item ESP", "DroppedItemESP", function(v)
         Config.DroppedItemESP = v
     end)
-    AddSlider(espBox, "Dropped Item Render Distance", "DroppedItemMaxDist", 100, 20000, " studs", 0, function(v)
+    AddSlider(espBox, "Dropped Item Render Distance", "DroppedItemMaxDist", 100, 2000, " studs", 0, function(v)
         Config.DroppedItemMaxDist = v
     end)
-    AddToggle(espBox, "Last Death ESP", "LastDeathESP", function(v)
-        Config.LastDeathESP = v
-        Notify("Visuals", if v then "Last Death ESP Enabled" else "Last Death ESP Disabled")
+    AddToggle(espBox, "Extraction Zone ESP", "ExtractionESP", function(v)
+        Config.ExtractionESP = v
     end)
-
-    local radarBox = CreateSection(col1, "Radar Settings")
-    AddToggle(radarBox, "Enable Radar", "RadarEnabled", function(v)
-        Config.RadarEnabled = v
+    AddSlider(espBox, "Extraction Render Distance", "ExtractionMaxDist", 500, 10000, " studs", 0, function(v)
+        Config.ExtractionMaxDist = v
     end)
-    AddSlider(radarBox, "Radar Range", "RadarMaxDist", 100, 10000, " studs", 0, function(v)
-        Config.RadarMaxDist = v
+    AddToggle(espBox, "Trap / Mine ESP", "TrapESP", function(v)
+        Config.TrapESP = v
+    end)
+    AddSlider(espBox, "Trap Render Distance", "TrapMaxDist", 50, 2000, " studs", 0, function(v)
+        Config.TrapMaxDist = v
     end)
 
     local fxBox = CreateSection(col2, "Combat Visuals")
+    AddToggle(fxBox, "Bullet Tracers", "BulletTracers", function(v)
+        Config.BulletTracers = v
+    end)
     AddToggle(fxBox, "Hit Markers", "HitMarkers", function(v)
         Config.HitMarkers = v
     end)
@@ -3731,11 +3403,14 @@ do
     AddSlider(fxBox, "Sound Volume", "HitSoundVolume", 1, 10, "x", 0, function(v)
         Config.HitSoundVolume = v
     end)
-
-    local lootBox = CreateSection(col2, "Automation")
-    AddToggle(lootBox, "Auto Loot / Fast Interact", "AutoLoot", function(v)
-        Config.AutoLoot = v
-        Notify("Automation", v and "Auto Loot activated" or "Auto Loot disabled")
+    AddToggle(fxBox, "Hit Logs", "HitLogsEnabled", function(v)
+        Config.HitLogsEnabled = v
+    end)
+    AddSlider(fxBox, "Lifetime", "HitLogsLifetime", 1, 30, "s", 0, function(v)
+        Config.HitLogsLifetime = v
+    end)
+    AddSlider(fxBox, "Text Size", "HitLogsSize", 10, 30, "px", 0, function(v)
+        Config.HitLogsSize = v
     end)
 end
 
@@ -3774,8 +3449,8 @@ local function RestoreLighting()
         local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
         if atmo and defaultAtmosphere.Density ~= nil then
             atmo.Density = defaultAtmosphere.Density
-            atmo.Haze = atmo.Haze or 0
-            atmo.Glare = atmo.Glare or 0
+            atmo.Haze = defaultAtmosphere.Haze or 0
+            atmo.Glare = defaultAtmosphere.Glare or 0
         end
     end)
 end
@@ -3842,14 +3517,34 @@ for _, prop in ipairs({"ClockTime", "Brightness", "GlobalShadows", "Ambient", "O
     end))
 end
 
+local originalFoliageTransparency: { [BasePart]: number } = {}
+local function UpdateCameraZoom()
+    pcall(function()
+        if Config.ThirdPerson then
+            LocalPlayer.CameraMaxZoomDistance = Config.ThirdPersonDist
+            LocalPlayer.CameraMinZoomDistance = Config.ThirdPersonDist
+        else
+            LocalPlayer.CameraMinZoomDistance = 0.5
+            LocalPlayer.CameraMaxZoomDistance = 128
+        end
+    end)
+end
+
+TrackConnection(LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.2)
+    UpdateCameraZoom()
+end))
+
 do
     local col1, col2 = CreatePage("Misc")
     local camBox = CreateSection(col1, "Camera")
     AddToggle(camBox, "Third Person Mode", "ThirdPerson", function(v)
         Config.ThirdPerson = v
+        UpdateCameraZoom()
     end)
     AddSlider(camBox, "Camera Distance", "ThirdPersonDist", 5, 30, " studs", 0, function(v)
         Config.ThirdPersonDist = v
+        UpdateCameraZoom()
     end)
 
     local lightBox = CreateSection(col2, "Lighting & Atmosphere")
@@ -3887,13 +3582,25 @@ do
     AddToggle(lightBox, "Remove Foliage", "RemoveFoliage", function(v)
         Config.RemoveFoliage = v
         pcall(function()
-            for _, obj in ipairs(Workspace:GetDescendants()) do
-                if obj:IsA("MeshPart") or obj:IsA("Part") then
-                    local lower = obj.Name:lower()
-                    if lower:find("leaf") or lower:find("leaves") or lower:find("foliage") or lower:find("bush") then
-                        obj.Transparency = if v then 1 else 0
+            if v then
+                for _, obj in ipairs(Workspace:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        local lower = obj.Name:lower()
+                        if lower:find("leaf") or lower:find("leaves") or lower:find("foliage") or lower:find("bush") then
+                            if originalFoliageTransparency[obj] == nil then
+                                originalFoliageTransparency[obj] = obj.Transparency
+                            end
+                            obj.Transparency = 1
+                        end
                     end
                 end
+            else
+                for part, origTr in pairs(originalFoliageTransparency) do
+                    if part and part.Parent then
+                        part.Transparency = origTr
+                    end
+                end
+                table.clear(originalFoliageTransparency)
             end
         end)
     end)
@@ -3961,26 +3668,21 @@ do
         Notify("Hotkey", "Container ESP key set to [" .. k.Name .. "]")
     end)
     AddButton(mgmtBox, "Unload Script", function()
-        if genv and genv.ProjectDeltaUnload then
+        if UnloadScript then
+            UnloadScript()
+        elseif genv and genv.ProjectDeltaUnload then
             genv.ProjectDeltaUnload()
         end
     end)
 end
 
-TrackConnection(RunService.RenderStepped:Connect(function()
-    if not isRunning then return end
-    if Config.ThirdPerson then
-        LocalPlayer.CameraMaxZoomDistance = Config.ThirdPersonDist
-        LocalPlayer.CameraMinZoomDistance = Config.ThirdPersonDist
-    else
-        LocalPlayer.CameraMinZoomDistance = 0.5
-        LocalPlayer.CameraMaxZoomDistance = 128
-    end
-end))
-
-local function UnloadScript()
+UnloadScript = function()
     if not isRunning then return end
     isRunning = false
+
+    if ToggleUI then
+        pcall(ToggleUI, false)
+    end
 
     for _, conn in ipairs(activeConnections) do
         pcall(function() conn:Disconnect() end)
@@ -3998,30 +3700,10 @@ local function UnloadScript()
         pcall(function() drawObj:Remove() end)
     end
     table.clear(cleanUpDrawings)
-    for item, visual in pairs(droppedItemVisuals) do
-        pcall(function()
-            visual.Gui:Destroy()
-        end)
-        if visual.Highlight then
-            pcall(function()
-                visual.Highlight:Destroy()
-            end)
-        end
-        droppedItemVisuals[item] = nil
-    end
-
     for _, drawObj in pairs(activeWorldDrawings) do
         pcall(function() drawObj:Remove() end)
     end
     table.clear(activeWorldDrawings)
-    for _, hl in pairs(activeChams) do
-        pcall(function() hl:Destroy() end)
-    end
-    table.clear(activeChams)
-    if deathChamsHighlight then
-        pcall(function() deathChamsHighlight:Destroy() end)
-        deathChamsHighlight = nil
-    end
     for _, esp in pairs(npcEspDrawings) do
         pcall(function() esp.Box:Remove() end)
         pcall(function() esp.HealthBar:Remove() end)
@@ -4032,10 +3714,49 @@ local function UnloadScript()
     table.clear(npcEspDrawings)
     table.clear(trackedNPCs)
 
+    for _, esp in pairs(playerEspDrawings) do
+        pcall(function() esp.Box:Remove() end)
+        pcall(function() esp.HealthBar:Remove() end)
+        pcall(function() esp.NameText:Remove() end)
+        pcall(function() esp.DistText:Remove() end)
+        pcall(function() esp.Tracer:Remove() end)
+    end
+    table.clear(playerEspDrawings)
+
     for _, inst in ipairs(cleanUpInstances) do
         pcall(function() inst:Destroy() end)
     end
     table.clear(cleanUpInstances)
+
+    if MainScreenGui and MainScreenGui.Parent then
+        pcall(function() MainScreenGui:Destroy() end)
+    end
+    if TargetInfoGui and TargetInfoGui.Parent then
+        pcall(function() TargetInfoGui:Destroy() end)
+    end
+    pcall(function()
+        for _, container in ipairs({ RootContainer, CoreGui, CoreGui:FindFirstChild("RobloxGui"), LocalPlayer:FindFirstChild("PlayerGui") }) do
+            if container then
+                local old1 = container:FindFirstChild("Identical_ProjectDelta")
+                if old1 then old1:Destroy() end
+                local old2 = container:FindFirstChild("Identical_TargetInfo")
+                if old2 then old2:Destroy() end
+            end
+        end
+    end)
+
+    pcall(function()
+        for part, origTr in pairs(originalFoliageTransparency) do
+            if part and part.Parent then part.Transparency = origTr end
+        end
+        table.clear(originalFoliageTransparency)
+    end)
+
+    pcall(function()
+        Workspace.Terrain.Decoration = true
+        LocalPlayer.CameraMinZoomDistance = 0.5
+        LocalPlayer.CameraMaxZoomDistance = 128
+    end)
 
     for origFn, oldClosure in pairs(hookedFunctions) do
         pcall(function()
@@ -4065,6 +3786,8 @@ pcall(function()
     else
         SaveConfig()
     end
+    ApplyAmmoMods()
+    UpdateCameraZoom()
 end)
 
 ToggleUI(true)
