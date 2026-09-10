@@ -1,4 +1,3 @@
-```
 repeat task.wait() until game:GetService("Players").LocalPlayer
 
 local env = getfenv()
@@ -4071,4 +4070,3 @@ end)
 ToggleUI(true)
 
 Notify("Identical", "Project Delta loaded! Press [" .. Config.MenuKey.Name .. "] to toggle.", IdenticalTheme.Accent, 4)
-```
